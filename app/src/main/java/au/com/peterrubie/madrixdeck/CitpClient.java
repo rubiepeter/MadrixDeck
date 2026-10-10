@@ -77,6 +77,19 @@ final class CitpClient {
 
     private final ArrayDeque<String> log = new ArrayDeque<>();
 
+    // Announcing ourselves (PINF/PLoc) every 2 s
+    private long lastAnnounce;
+    private boolean announceLogged;
+
+    // Diagnostics: frame timing and press-to-picture-change
+    private final ArrayDeque<Long> frameTimes = new ArrayDeque<>();
+    private int[] lastSig;
+    private double baselineDiff = -1;
+    private volatile long pressAt;
+    private volatile int[] pressSig;
+    private volatile boolean pressPending;
+    private volatile String lastPressResult = "";
+
     CitpClient(Context ctx, OscClient wifiSource, Listener listener) {
         this.cm = (ConnectivityManager) ctx.getSystemService(Context.CONNECTIVITY_SERVICE);
         this.wm = (WifiManager) ctx.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
@@ -141,6 +154,10 @@ final class CitpClient {
             if (sourceWidth > 0) {
                 sb.append(", requesting ").append(sourceWidth).append("x").append(sourceHeight);
             }
+            sb.append("\n   Timing: ").append(rateText());
+            if (!lastPressResult.isEmpty()) {
+                sb.append("\n   Last place press to picture change: ").append(lastPressResult);
+            }
             synchronized (sizeStats) {
                 for (java.util.Map.Entry<String, int[]> e : sizeStats.entrySet()) {
                     int[] v = e.getValue();
@@ -199,7 +216,12 @@ final class CitpClient {
                 udpSocket = ms;
                 log("Listening on UDP " + Citp.PORT + (ni != null ? " (" + ni.getName() + ")" : ""));
                 byte[] buf = new byte[65536];
+                if (ni != null) {
+                    ms.setNetworkInterface(ni);
+                }
                 while (running && enabled && net.equals(wifiSource.network())) {
+                    announce(ms);
+                    checkPressTimeout();
                     DatagramPacket p = new DatagramPacket(buf, buf.length);
                     try {
                         ms.receive(p);
@@ -279,9 +301,9 @@ final class CitpClient {
                 return;
             }
             stat[1]++;
-            if (stat[1] % 10 == 1) {
-                stat[2] = brightness(bmp);
-            }
+            int[] sig = signature(bmp);
+            stat[2] = sigBrightness(sig);
+            frameTiming(sig);
             lastFrame = bmp;
             frameCount++;
             if (lastFrameAt == 0 || frameCount == 1) {
@@ -293,22 +315,133 @@ final class CitpClient {
         }
     }
 
-    /** Average brightness 0-100 % from an 8 x 8 grid of pixels. */
-    private static int brightness(Bitmap b) {
+    /** Brightness (0-255) of a 16 x 6 grid of pixels: enough to spot a change of look. */
+    private static int[] signature(Bitmap b) {
         int w = b.getWidth(), h = b.getHeight();
+        int[] sig = new int[16 * 6];
         if (w <= 0 || h <= 0) {
+            return sig;
+        }
+        int i = 0;
+        for (int y = 0; y < 6; y++) {
+            for (int x = 0; x < 16; x++) {
+                int c = b.getPixel(Math.min(w - 1, x * w / 16 + w / 32), Math.min(h - 1, y * h / 6 + h / 12));
+                sig[i++] = (((c >> 16) & 0xFF) * 299 + ((c >> 8) & 0xFF) * 587 + (c & 0xFF) * 114) / 1000;
+            }
+        }
+        return sig;
+    }
+
+    private static int sigBrightness(int[] sig) {
+        long sum = 0;
+        for (int v : sig) {
+            sum += v;
+        }
+        return sig.length == 0 ? 0 : (int) (sum * 100 / (255L * sig.length));
+    }
+
+    private static double sigDiff(int[] a, int[] b) {
+        if (a == null || b == null || a.length != b.length) {
             return 0;
         }
         long sum = 0;
-        int n = 0;
-        for (int y = 0; y < 8; y++) {
-            for (int x = 0; x < 8; x++) {
-                int c = b.getPixel(Math.min(w - 1, x * w / 8 + w / 16), Math.min(h - 1, y * h / 8 + h / 16));
-                sum += (((c >> 16) & 0xFF) * 299 + ((c >> 8) & 0xFF) * 587 + (c & 0xFF) * 114) / 1000;
-                n++;
+        for (int i = 0; i < a.length; i++) {
+            sum += Math.abs(a[i] - b[i]);
+        }
+        return (double) sum / a.length;
+    }
+
+    /** Frame rate, gaps, and how long after a place press the picture changes. */
+    private void frameTiming(int[] sig) {
+        long now = System.currentTimeMillis();
+        synchronized (frameTimes) {
+            frameTimes.addLast(now);
+            while (!frameTimes.isEmpty() && now - frameTimes.peekFirst() > 5000) {
+                frameTimes.removeFirst();
             }
         }
-        return (int) (sum * 100 / (255L * n));
+        double diff = sigDiff(sig, lastSig);
+        if (pressPending) {
+            double change = sigDiff(sig, pressSig);
+            double threshold = Math.max(12, (baselineDiff < 0 ? 0 : baselineDiff) * 3);
+            // The new place has arrived once the picture differs clearly from before the press
+            // and isn't black (MADRIX's stream lags and can go black while switching).
+            if (pressSig != null && change > threshold && sigBrightness(sig) > 2) {
+                pressPending = false;
+                lastPressResult = (now - pressAt) + " ms";
+                log("Live picture changed " + (now - pressAt) + " ms after the place press");
+            }
+        } else if (lastSig != null) {
+            baselineDiff = baselineDiff < 0 ? diff : baselineDiff * 0.9 + diff * 0.1;
+        }
+        lastSig = sig;
+    }
+
+    private void checkPressTimeout() {
+        if (pressPending && System.currentTimeMillis() - pressAt > 10000) {
+            pressPending = false;
+            lastPressResult = "no clear change";
+            log("No clear picture change within 10 s of the place press");
+        }
+    }
+
+    /** Called when a place button is pressed, to time how long the live picture takes to follow. */
+    void markPress() {
+        if (!live() || lastSig == null) {
+            return;
+        }
+        pressSig = lastSig;
+        pressAt = System.currentTimeMillis();
+        pressPending = true;
+    }
+
+    /**
+     * True just after a place press while the stream still shows the old place (or black):
+     * the button keeps its normal thumbnail until the live picture has caught up (max 10 s).
+     */
+    boolean holding() {
+        return pressPending && System.currentTimeMillis() - pressAt <= 10000;
+    }
+
+    /** Frames per second and longest gap over the last 5 seconds. */
+    private String rateText() {
+        synchronized (frameTimes) {
+            if (frameTimes.size() < 2) {
+                return "no recent frames";
+            }
+            long gap = 0;
+            Long prev = null;
+            for (Long t : frameTimes) {
+                if (prev != null) {
+                    gap = Math.max(gap, t - prev);
+                }
+                prev = t;
+            }
+            long span = Math.max(1, frameTimes.peekLast() - frameTimes.peekFirst());
+            double fps = (frameTimes.size() - 1) * 1000.0 / span;
+            return String.format(Locale.US, "%.1f fps, longest gap %d ms (last 5 s)", fps, gap);
+        }
+    }
+
+    /** Tells MADRIX (and other CITP peers) that we're here, every 2 seconds. */
+    private void announce(MulticastSocket ms) {
+        long now = System.currentTimeMillis();
+        if (now - lastAnnounce < 2000) {
+            return;
+        }
+        lastAnnounce = now;
+        try {
+            byte[] p = Citp.ploc(0, "LightingConsole", "MADRIX Deck", "Running");
+            for (String g : new String[]{Citp.GROUP, Citp.LEGACY_GROUP}) {
+                ms.send(new DatagramPacket(p, p.length, InetAddress.getByName(g), Citp.PORT));
+            }
+            if (!announceLogged) {
+                announceLogged = true;
+                log("Announcing as MADRIX Deck every 2 s");
+            }
+        } catch (Exception e) {
+            log("Announce failed: " + e.getMessage());
+        }
     }
 
     private static Bitmap decode(Citp.Frame f) {

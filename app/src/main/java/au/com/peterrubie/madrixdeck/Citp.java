@@ -46,6 +46,18 @@ public final class Citp {
         return packet("PINF", o.toByteArray());
     }
 
+    /** PINF/PLoc announcement: who we are, so MADRIX keeps us as a known peer. */
+    public static byte[] ploc(int tcpPort, String type, String name, String state) {
+        ByteArrayOutputStream o = new ByteArrayOutputStream();
+        write(o, cookie("PLoc"));
+        o.write(tcpPort & 0xFF);
+        o.write((tcpPort >> 8) & 0xFF);
+        write(o, ucs1(type));
+        write(o, ucs1(name));
+        write(o, ucs1(state));
+        return packet("PINF", o.toByteArray());
+    }
+
     public static byte[] msex(int minor, String type, byte[] body) {
         ByteArrayOutputStream o = new ByteArrayOutputStream();
         o.write(1);

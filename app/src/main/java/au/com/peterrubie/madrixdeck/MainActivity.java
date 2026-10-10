@@ -424,6 +424,9 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                     DeckButtonView v = new DeckButtonView(this, b);
                     v.setOnClickListener(x -> {
                         v.flash();
+                        if (engine.placeOf(b) != null) {
+                            citp.markPress();
+                        }
                         engine.press(b);
                     });
                     v.setOnLongClickListener(x -> {
@@ -476,7 +479,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             boolean empty = useHttp && !hidden && Boolean.FALSE.equals(httpStatus.filled(place));
             String bottom = empty ? null : (autoLabel ? name : label);
             boolean active = engine.isActive(b);
-            boolean live = active && !hidden && citp.live() && liveFrame != null;
+            boolean live = active && !hidden && citp.live() && liveFrame != null && !citp.holding();
             if (live) {
                 // The selected place shows MADRIX's live Main Output instead of its stored thumbnail.
                 thumb = liveFrame;
@@ -1429,6 +1432,36 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         if (hasFocus) {
             hideSystemBars();
         }
+    }
+
+    private android.net.wifi.WifiManager.WifiLock wifiLock;
+
+    /** Low-latency Wi-Fi while the app is on screen (less power-save delay on the live preview). */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        try {
+            if (wifiLock == null) {
+                android.net.wifi.WifiManager wm =
+                        (android.net.wifi.WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
+                int mode = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+                        ? android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                        : android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+                wifiLock = wm.createWifiLock(mode, "madrixdeck");
+                wifiLock.setReferenceCounted(false);
+            }
+            wifiLock.acquire();
+        } catch (Exception ignored) {
+            // not critical
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        if (wifiLock != null && wifiLock.isHeld()) {
+            wifiLock.release();
+        }
+        super.onPause();
     }
 
     @Override
