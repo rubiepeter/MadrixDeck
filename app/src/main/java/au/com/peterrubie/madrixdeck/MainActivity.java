@@ -214,11 +214,15 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             }
             DeckLayout l = DeckLayout.fromJson(new JSONObject(json));
             if (!l.pages.isEmpty()) {
-                if (l.version < 2) {
-                    // One-time upgrade from 2.3 and earlier: grey place buttons with a divider.
-                    for (DeckLayout.Page p : l.pages) {
-                        CompanionImporter.stylePlaces(p);
+                if (l.version < DeckLayout.CURRENT_VERSION) {
+                    if (l.version < 2) {
+                        // From 2.3 and earlier: grey place buttons with a divider.
+                        for (DeckLayout.Page p : l.pages) {
+                            CompanionImporter.stylePlaces(p);
+                        }
                     }
+                    // From 2.4 and earlier: labels / colours typed on place buttons belong to the place.
+                    DeckLayout.movePlaceEditsToPlaces(l);
                     l.version = DeckLayout.CURRENT_VERSION;
                     layout = l;
                     saveLayout();
@@ -436,16 +440,17 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 continue;
             }
             boolean hidden = place < 0 || place >= Engine.PLACE_COUNT;
-            Integer base = Engine.basePlaceOf(b);
-            String label = b.label == null ? "" : b.label.trim();
-            boolean autoLabel = label.isEmpty() || label.equals(String.valueOf(base + 1));
+            DeckLayout.PlaceStyle st = layout.placeStyles.get(place);
+            String label = st != null && st.label != null ? st.label.trim() : "";
+            boolean autoLabel = label.isEmpty();
+            int bg = st != null && st.bg != null ? st.bg : DeckLayout.PLACE_GREY;
             String number = String.valueOf(place + 1);
             String name = useHttp && !hidden ? httpStatus.name(place) : null;
             Object img = useHttp && !hidden ? httpStatus.thumb(place) : null;
             Bitmap thumb = img instanceof Bitmap ? (Bitmap) img : null;
             boolean empty = useHttp && !hidden && Boolean.FALSE.equals(httpStatus.filled(place));
             String bottom = empty ? null : (autoLabel ? name : label);
-            v.update(autoLabel ? number : label, engine.isActive(b), number, bottom, empty ? null : thumb, empty, hidden);
+            v.update(autoLabel ? number : label, engine.isActive(b), number, bottom, empty ? null : thumb, empty, hidden, bg);
         }
     }
 
@@ -922,6 +927,13 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
 
     private void showEditor(DeckLayout.Btn b) {
         LinearLayout col = formColumn();
+        // Place buttons edit the place's own label / colour, not the button slot.
+        final Integer place = engine.placeOf(b);
+        final DeckLayout.PlaceStyle oldStyle = place == null ? null : layout.placeStyles.get(place);
+        final String curLabel = place == null ? b.label
+                : (oldStyle != null && oldStyle.label != null ? oldStyle.label : "");
+        final int curBg = place == null ? b.bg
+                : (oldStyle != null && oldStyle.bg != null ? oldStyle.bg : DeckLayout.PLACE_GREY);
 
         TextView info = new TextView(this);
         info.setText(Describe.button(b, layout, engine, client.host(), client.port()));
@@ -934,7 +946,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         if (!dynamicLabel) {
             sectionLabel(col, "Label (new line for a second line)");
             label = new EditText(this);
-            label.setText(b.label);
+            label.setText(curLabel);
             label.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
             label.setSingleLine(false);
             label.setMaxLines(3);
@@ -1003,12 +1015,12 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         View preview = new View(this);
         GradientDrawable pd = new GradientDrawable();
         pd.setCornerRadius(dp(6));
-        pd.setColor(0xFF000000 | b.bg);
+        pd.setColor(0xFF000000 | curBg);
         pd.setStroke(dp(1), 0xFF888888);
         preview.setBackground(pd);
         hexRow.addView(preview, new LinearLayout.LayoutParams(dp(44), dp(36)));
         EditText hex = new EditText(this);
-        hex.setText(DeckLayout.colorHex(b.bg));
+        hex.setText(DeckLayout.colorHex(curBg));
         hex.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         hex.setSingleLine(true);
         LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
@@ -1016,7 +1028,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         hexRow.addView(hex, hp);
         col.addView(hexRow);
 
-        RgbSliders buttonRgb = new RgbSliders(col, rgbOf(b.bg));
+        RgbSliders buttonRgb = new RgbSliders(col, rgbOf(curBg));
         final boolean[] syncing = {false};
         buttonRgb.onChange = () -> {
             if (syncing[0]) {
@@ -1086,10 +1098,23 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 .setView(sv)
                 .setPositiveButton("Save", (d, w) -> {
                     saved[0] = true;
-                    if (labelField != null) {
-                        b.label = labelField.getText().toString().trim();
+                    if (place != null) {
+                        String l = labelField == null ? "" : labelField.getText().toString().trim();
+                        int c = DeckLayout.parseColor(hex.getText().toString(), curBg);
+                        DeckLayout.PlaceStyle st = new DeckLayout.PlaceStyle();
+                        st.label = l.isEmpty() || l.equals(String.valueOf(place + 1)) ? null : l;
+                        st.bg = c == DeckLayout.PLACE_GREY ? null : c;
+                        if (st.label == null && st.bg == null) {
+                            layout.placeStyles.remove(place);
+                        } else {
+                            layout.placeStyles.put(place, st);
+                        }
+                    } else {
+                        if (labelField != null) {
+                            b.label = labelField.getText().toString().trim();
+                        }
+                        b.bg = DeckLayout.parseColor(hex.getText().toString(), b.bg);
                     }
-                    b.bg = DeckLayout.parseColor(hex.getText().toString(), b.bg);
                     if (colourAct != null && output != null) {
                         int[] c = output.get();
                         boolean changed = argInt(colourAct.args.get(0)) != c[0] || argInt(colourAct.args.get(1)) != c[1]
@@ -1139,6 +1164,9 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                     renderPage();
                 })
                 .setNeutralButton("Original", (d, w) -> {
+                    if (place != null) {
+                        layout.placeStyles.remove(place);
+                    }
                     b.label = b.origLabel;
                     b.bg = b.origBg;
                     if (colourAct != null && colourAct.origArgs != null) {
@@ -1181,6 +1209,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                             b.bg = b.origBg;
                         }
                     }
+                    layout.placeStyles.clear();
                     saveLayout();
                     renderPage();
                 })

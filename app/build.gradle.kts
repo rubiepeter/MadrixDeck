@@ -10,8 +10,8 @@ android {
         applicationId = "au.com.peterrubie.madrixdeck"
         minSdk = 26
         targetSdk = 35
-        versionCode = 6
-        versionName = "2.4"
+        versionCode = 7
+        versionName = "2.5"
     }
 
     // Fixed key so each GitHub build installs over the previous one and keeps your edits.

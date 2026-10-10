@@ -25,7 +25,15 @@ public final class DeckLayout {
     public final List<Page> pages = new ArrayList<>();
     /** 1 = up to app 2.3 (coloured place buttons), 2 = grey places with dividers. */
     public int version = CURRENT_VERSION;
-    public static final int CURRENT_VERSION = 2;
+    public static final int CURRENT_VERSION = 3;
+
+    /** Custom label / button colour for a MADRIX place (0-based), whichever button shows it. */
+    public static final class PlaceStyle {
+        public String label; // null = show MADRIX name / number
+        public Integer bg;   // null = neutral grey
+    }
+
+    public final java.util.TreeMap<Integer, PlaceStyle> placeStyles = new java.util.TreeMap<>();
 
     public static final class Page {
         public String name = "";
@@ -211,12 +219,43 @@ public final class DeckLayout {
             jp.put(o);
         }
         root.put("pages", jp);
+        JSONObject ps = new JSONObject();
+        for (Map.Entry<Integer, PlaceStyle> e : placeStyles.entrySet()) {
+            JSONObject o = new JSONObject();
+            if (e.getValue().label != null) {
+                o.put("label", e.getValue().label);
+            }
+            if (e.getValue().bg != null) {
+                o.put("bg", colorHex(e.getValue().bg));
+            }
+            ps.put(String.valueOf(e.getKey()), o);
+        }
+        root.put("placeStyles", ps);
         return root;
     }
 
     public static DeckLayout fromJson(JSONObject root) {
         DeckLayout layout = new DeckLayout();
         layout.version = root.optInt("version", 1);
+        JSONObject ps = root.optJSONObject("placeStyles");
+        if (ps != null) {
+            Iterator<String> keys = ps.keys();
+            while (keys.hasNext()) {
+                String k = keys.next();
+                JSONObject o = ps.optJSONObject(k);
+                if (o == null) {
+                    continue;
+                }
+                try {
+                    PlaceStyle st = new PlaceStyle();
+                    st.label = o.has("label") ? str(o, "label", null) : null;
+                    st.bg = o.has("bg") ? parseColor(str(o, "bg", null), PLACE_GREY) : null;
+                    layout.placeStyles.put(Integer.parseInt(k), st);
+                } catch (NumberFormatException ignored) {
+                    // skip bad key
+                }
+            }
+        }
         JSONArray jp = root.optJSONArray("pages");
         if (jp == null) {
             return layout;
@@ -337,6 +376,32 @@ public final class DeckLayout {
             }
         }
         return out;
+    }
+
+    /** Moves a custom label / colour typed on a place button onto that button's place number. */
+    public static void movePlaceEditsToPlaces(DeckLayout l) {
+        for (Page p : l.pages) {
+            for (Btn b : p.buttons) {
+                Integer base = Engine.basePlaceOf(b);
+                if (base == null) {
+                    continue;
+                }
+                String auto = String.valueOf(base + 1);
+                String label = b.label == null ? "" : b.label.trim();
+                boolean customLabel = !label.isEmpty() && !label.equals(auto);
+                boolean customBg = b.bg != PLACE_GREY;
+                if (customLabel || customBg) {
+                    PlaceStyle st = new PlaceStyle();
+                    st.label = customLabel ? label : null;
+                    st.bg = customBg ? b.bg : null;
+                    l.placeStyles.put(base, st); // edits were made with places 1-32 showing
+                }
+                b.label = auto;
+                b.origLabel = auto;
+                b.bg = PLACE_GREY;
+                b.origBg = PLACE_GREY;
+            }
+        }
     }
 
     /** True when every action changes page (COLS, FX): drawn with a page-change icon. */

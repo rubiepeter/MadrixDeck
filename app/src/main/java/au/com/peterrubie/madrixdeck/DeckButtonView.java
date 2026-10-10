@@ -33,6 +33,7 @@ final class DeckButtonView extends View {
     private Bitmap thumb;
     private boolean empty;
     private boolean hidden;
+    private int bgColor;
 
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -45,6 +46,7 @@ final class DeckButtonView extends View {
     DeckButtonView(Context ctx, DeckLayout.Btn btn) {
         super(ctx);
         this.btn = btn;
+        this.bgColor = btn.bg;
         density = ctx.getResources().getDisplayMetrics().density;
         border.setStyle(Paint.Style.STROKE);
         textPaint.setTypeface(Typeface.create(Typeface.DEFAULT, Typeface.BOLD));
@@ -56,13 +58,16 @@ final class DeckButtonView extends View {
     }
 
     void update(String text, boolean active) {
-        update(text, active, null, null, null, false, false);
+        update(text, active, null, null, null, false, false, btn.bg);
     }
 
-    void update(String text, boolean active, String corner, String bottom, Bitmap thumb, boolean empty, boolean hidden) {
+    void update(String text, boolean active, String corner, String bottom, Bitmap thumb, boolean empty, boolean hidden,
+                int bg) {
         boolean changed = !text.equals(this.text) || active != this.active || !eq(corner, this.corner)
-                || !eq(bottom, this.bottom) || thumb != this.thumb || empty != this.empty || hidden != this.hidden;
+                || !eq(bottom, this.bottom) || thumb != this.thumb || empty != this.empty || hidden != this.hidden
+                || bg != this.bgColor;
         if (changed) {
+            this.bgColor = bg;
             this.text = text;
             this.active = active;
             this.corner = corner;
@@ -109,7 +114,7 @@ final class DeckButtonView extends View {
         float radius = 10 * density;
         rect.set(inset, inset, w - inset, h - inset);
 
-        int bg = (empty ? EMPTY_GREY : btn.bg) & 0xFFFFFF;
+        int bg = (empty ? EMPTY_GREY : bgColor) & 0xFFFFFF;
         fill.setColor(active && thumb == null ? lighten(bg, 0.22f) : Color.rgb((bg >> 16) & 0xFF, (bg >> 8) & 0xFF, bg & 0xFF));
         canvas.drawRoundRect(rect, radius, radius, fill);
 
