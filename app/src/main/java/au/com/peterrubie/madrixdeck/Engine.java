@@ -88,6 +88,7 @@ public final class Engine {
             case DeckLayout.KIND_SPEED_RESET: changeSpeed(0); return;
             case DeckLayout.KIND_FADE:
                 fadeMs = b.fadeMs;
+                sendFadeTime();
                 notifyChanged();
                 return;
             default:
@@ -140,10 +141,20 @@ public final class Engine {
             }
             return;
         }
+        Matcher dm = DECK.matcher(path);
+        if (dm.matches() && "Places/Index".equals(dm.group(2))) {
+            // Place changes use MADRIX's own crossfade time: keep it in step with SNAP / 1s / 2s.
+            sendFadeTime();
+        }
         sender.send(new OscMessage(path, args));
         // Track the selection even if the send failed, so the highlight always shows
         // what was last pressed (the top bar shows when sending isn't working).
         applyState(path, args, false);
+    }
+
+    /** Sets MADRIX's crossfade time (seconds) to the app's current fade setting. */
+    private void sendFadeTime() {
+        sender.send(OscMessage.of("/Fade/Time", fadeMs / 1000f));
     }
 
     private void runFade(int bank, String path, int[] from, int[] to, int ms, int gen) {

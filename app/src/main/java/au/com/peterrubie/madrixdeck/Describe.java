@@ -31,9 +31,11 @@ public final class Describe {
                         .append(engine.speedText()).append(". Default speed is in Settings.");
                 break;
             case DeckLayout.KIND_FADE:
-                sb.append(b.fadeMs == 0 ? "Colour changes snap instantly." :
-                        "Colour changes crossfade over " + (b.fadeMs / 1000.0) + " s.");
-                sb.append("\nThe lit button applies to every colour press.");
+                sb.append(b.fadeMs == 0 ? "Colour and place changes snap instantly." :
+                        "Colour and place changes crossfade over " + (b.fadeMs / 1000.0) + " s.");
+                sb.append("\nThe lit button applies to every colour and place press.")
+                        .append("\nPlaces use MADRIX's crossfade time: OSC /Fade/Time ")
+                        .append(OscMessage.trimFloat(b.fadeMs / 1000f));
                 break;
             default:
                 if (b.actions.isEmpty()) {
@@ -105,7 +107,7 @@ public final class Describe {
         Integer v = a.args.isEmpty() || !(a.args.get(0) instanceof Number) ? null : ((Number) a.args.get(0)).intValue();
         Matcher m = PLACE.matcher(a.path);
         if (m.matches() && v != null) {
-            return "Deck " + m.group(1) + ", Place " + (v + 1) + " (sends index " + v + ")\n   OSC " + raw;
+            return "Deck " + m.group(1) + ", Place " + (v + 1) + " (sends index " + v + ")\n   Uses the current crossfade setting\n   OSC " + raw;
         }
         m = STORAGE.matcher(a.path);
         if (m.matches() && v != null) {

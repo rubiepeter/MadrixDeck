@@ -26,7 +26,7 @@ even on a network with no internet.
 ### Colours (COL page)
 
 - COLOUR A = MADRIX Global Colour 1, COLOUR B = Global Colour 2.
-- SNAP / 1s / 2s set the colour crossfade. The lit one is active.
+- SNAP / 1s / 2s set the crossfade for colours and places (places use MADRIX /Fade/Time). The lit one is active.
 - The first colour press after opening the app snaps; later presses fade.
 
 ### Feedback (optional)
