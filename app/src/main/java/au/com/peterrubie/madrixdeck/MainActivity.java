@@ -1,0 +1,735 @@
+package au.com.peterrubie.madrixdeck;
+
+import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.content.SharedPreferences;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.text.Editable;
+import android.text.InputType;
+import android.text.TextWatcher;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowInsets;
+import android.view.WindowInsetsController;
+import android.view.WindowManager;
+import android.widget.EditText;
+import android.widget.HorizontalScrollView;
+import android.widget.LinearLayout;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
+import android.widget.ScrollView;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import org.json.JSONObject;
+
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.zip.GZIPInputStream;
+
+public class MainActivity extends Activity implements Engine.Listener, OscClient.StatusListener {
+
+    private static final String PREFS = "madrix_deck";
+    private static final String LAYOUT_FILE = "layout.json";
+    private static final int REQ_IMPORT = 42;
+
+    private static final String DEFAULT_HOST = "10.0.10.199";
+    private static final int DEFAULT_PORT = 9001;
+    private static final int DEFAULT_FB_PORT = 9002;
+
+    private static final int[] SWATCHES = {
+            0xcc6500, 0x000099, 0x990000, 0xff0000, 0xff8000, 0xcccc00, 0x00ff00, 0x00ffa6,
+            0x00e4ff, 0x0000ff, 0x9a00ff, 0xff00c4, 0xffbf80, 0xbfe0ff, 0xffffff, 0x808080,
+            0x44505c, 0x2b3a4a, 0x333333, 0x000000};
+
+    private SharedPreferences prefs;
+    private DeckLayout layout;
+    private int pageIndex;
+    private Engine engine;
+    private OscClient client;
+
+    private LinearLayout grid;
+    private TextView pageTitle;
+    private TextView status;
+    private final List<DeckButtonView> views = new ArrayList<>();
+    private boolean refreshPosted;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+
+        client = new OscClient(this, this);
+        engine = new Engine(client, this);
+        client.setIncoming(engine::onIncoming);
+        applySettings();
+
+        buildUi();
+        layout = loadLayout();
+        pageIndex = Math.max(0, Math.min(prefs.getInt("page", 0), layout.pages.size() - 1));
+        renderPage();
+        hideSystemBars();
+
+        client.start();
+    }
+
+    // ---------- settings ----------
+
+    private void applySettings() {
+        engine.stepPercent = prefDouble("step", 10);
+        engine.defaultSpeed = prefDouble("defspeed", 1.0);
+        engine.speedTarget = prefs.getString("target", "A");
+        engine.fadeMs = prefs.getInt("fadems", 0);
+        client.configure(prefs.getString("host", DEFAULT_HOST), prefs.getInt("port", DEFAULT_PORT),
+                prefs.getInt("fbport", DEFAULT_FB_PORT));
+    }
+
+    private double prefDouble(String key, double fallback) {
+        try {
+            return Double.parseDouble(prefs.getString(key, String.valueOf(fallback)));
+        } catch (NumberFormatException e) {
+            return fallback;
+        }
+    }
+
+    // ---------- layout storage ----------
+
+    private DeckLayout loadLayout() {
+        File f = new File(getFilesDir(), LAYOUT_FILE);
+        try {
+            String json;
+            if (f.exists()) {
+                json = readAll(new java.io.FileInputStream(f));
+            } else {
+                json = readAll(getAssets().open("default_layout.json"));
+            }
+            DeckLayout l = DeckLayout.fromJson(new JSONObject(json));
+            if (!l.pages.isEmpty()) {
+                return l;
+            }
+        } catch (Exception e) {
+            Toast.makeText(this, "Layout could not be read, using built-in layout", Toast.LENGTH_LONG).show();
+        }
+        try {
+            return DeckLayout.fromJson(new JSONObject(readAll(getAssets().open("default_layout.json"))));
+        } catch (Exception e) {
+            return new DeckLayout();
+        }
+    }
+
+    private void saveLayout() {
+        try (FileOutputStream out = new FileOutputStream(new File(getFilesDir(), LAYOUT_FILE))) {
+            out.write(layout.toJson().toString(1).getBytes(StandardCharsets.UTF_8));
+        } catch (Exception e) {
+            Toast.makeText(this, "Could not save layout: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private static String readAll(InputStream in) throws java.io.IOException {
+        return new String(readBytes(in), StandardCharsets.UTF_8);
+    }
+
+    private static byte[] readBytes(InputStream in) throws java.io.IOException {
+        try (InputStream is = in) {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = is.read(buf)) > 0) {
+                out.write(buf, 0, n);
+            }
+            return out.toByteArray();
+        }
+    }
+
+    // ---------- UI ----------
+
+    private int dp(float v) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
+    private void buildUi() {
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Color.BLACK);
+        root.setPadding(dp(4), dp(4), dp(4), dp(4));
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(8), dp(2), dp(8), dp(4));
+        bar.setOnClickListener(v -> showMenu());
+
+        pageTitle = new TextView(this);
+        pageTitle.setTextColor(Color.WHITE);
+        pageTitle.setTextSize(16);
+        pageTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        bar.addView(pageTitle, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        status = new TextView(this);
+        status.setTextSize(12);
+        status.setGravity(Gravity.END);
+        bar.addView(status, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        root.addView(bar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        grid = new LinearLayout(this);
+        grid.setOrientation(LinearLayout.VERTICAL);
+        root.addView(grid, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        setContentView(root);
+    }
+
+    private void renderPage() {
+        grid.removeAllViews();
+        views.clear();
+        if (layout.pages.isEmpty()) {
+            pageTitle.setText("No buttons");
+            updateStatus();
+            return;
+        }
+        DeckLayout.Page page = layout.pages.get(pageIndex);
+        pageTitle.setText(page.name);
+
+        int lastRow = page.rows;
+        for (DeckLayout.Btn b : page.buttons) {
+            lastRow = Math.max(lastRow, b.row);
+        }
+        for (int r = 1; r <= lastRow; r++) {
+            String header = page.headers.get(r);
+            if (header != null) {
+                TextView h = new TextView(this);
+                h.setText(header);
+                h.setTextColor(0xFFBBBBBB);
+                h.setTextSize(13);
+                h.setTypeface(Typeface.DEFAULT_BOLD);
+                h.setLetterSpacing(0.12f);
+                h.setPadding(dp(8), dp(6), dp(8), dp(2));
+                grid.addView(h, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                        ViewGroup.LayoutParams.WRAP_CONTENT));
+            }
+            if (page.rowEmpty(r)) {
+                continue;
+            }
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            for (int c = 1; c <= page.cols; c++) {
+                DeckLayout.Btn b = page.at(r, c);
+                View cell;
+                if (b == null) {
+                    cell = new View(this);
+                } else {
+                    DeckButtonView v = new DeckButtonView(this, b);
+                    v.setOnClickListener(x -> {
+                        v.flash();
+                        engine.press(b);
+                    });
+                    v.setOnLongClickListener(x -> {
+                        showEditor(b);
+                        return true;
+                    });
+                    views.add(v);
+                    cell = v;
+                }
+                row.addView(cell, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+            }
+            grid.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        }
+        refreshButtons();
+        updateStatus();
+    }
+
+    private String labelFor(DeckLayout.Btn b) {
+        switch (b.kind) {
+            case DeckLayout.KIND_SPEED_DOWN:
+                return "SPEED\n− " + engine.stepText();
+            case DeckLayout.KIND_SPEED_UP:
+                return "SPEED\n+ " + engine.stepText();
+            case DeckLayout.KIND_SPEED_RESET:
+                return "RESET\n" + engine.speedText();
+            default:
+                return b.label == null ? "" : b.label;
+        }
+    }
+
+    private void refreshButtons() {
+        for (DeckButtonView v : views) {
+            v.update(labelFor(v.btn), engine.isActive(v.btn));
+        }
+    }
+
+    private void updateStatus() {
+        if (status == null) {
+            return;
+        }
+        boolean up = client.wifiUp();
+        boolean ok = up && client.lastSendOk();
+        String text = "MADRIX " + client.host() + "  " + (up ? "Wi-Fi ✓" : "Wi-Fi ✗")
+                + (engine.feedbackSeen() ? "  FB ✓" : "");
+        if (up && !client.lastSendOk() && !client.lastError().isEmpty()) {
+            text += "  send error";
+        }
+        status.setText(text);
+        status.setTextColor(ok ? 0xFF7CD992 : 0xFFFFA040);
+    }
+
+    // ---------- Engine / client callbacks (any thread) ----------
+
+    @Override
+    public void onStateChanged() {
+        synchronized (this) {
+            if (refreshPosted) {
+                return;
+            }
+            refreshPosted = true;
+        }
+        runOnUiThread(() -> {
+            synchronized (MainActivity.this) {
+                refreshPosted = false;
+            }
+            refreshButtons();
+            updateStatus();
+            prefs.edit().putInt("fadems", engine.fadeMs).apply();
+        });
+    }
+
+    @Override
+    public void onPageRequest(int page, int delta) {
+        runOnUiThread(() -> {
+            if (layout.pages.isEmpty()) {
+                return;
+            }
+            int target;
+            if (delta != 0) {
+                int n = layout.pages.size();
+                target = ((pageIndex + delta) % n + n) % n;
+            } else {
+                target = layout.indexOfNumber(page);
+                if (target < 0) {
+                    return;
+                }
+            }
+            if (target != pageIndex) {
+                pageIndex = target;
+                prefs.edit().putInt("page", pageIndex).apply();
+                renderPage();
+            }
+        });
+    }
+
+    @Override
+    public void onStatusChanged() {
+        runOnUiThread(this::updateStatus);
+    }
+
+    // ---------- menu ----------
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        showMenu();
+    }
+
+    private void showMenu() {
+        String[] items = {"Settings", "Import Companion file", "Reset all button edits",
+                "Restore built-in layout", "Connection info", "Exit"};
+        new AlertDialog.Builder(this)
+                .setTitle("MADRIX Deck")
+                .setItems(items, (d, which) -> {
+                    switch (which) {
+                        case 0: showSettings(); break;
+                        case 1: startImport(); break;
+                        case 2: confirmResetEdits(); break;
+                        case 3: confirmRestoreBuiltIn(); break;
+                        case 4: showConnectionInfo(); break;
+                        default: finish(); break;
+                    }
+                })
+                .show();
+    }
+
+    private void showConnectionInfo() {
+        String msg = "MADRIX: " + client.host() + ":" + client.port()
+                + "\nWi-Fi: " + (client.wifiUp() ? "connected (app is pinned to Wi-Fi)" : "waiting for Wi-Fi")
+                + "\nLast send: " + (client.lastSendOk() ? "OK" : "failed " + client.lastError())
+                + "\nFeedback port " + prefs.getInt("fbport", DEFAULT_FB_PORT) + ": "
+                + (client.feedbackOnPort() ? "listening" : "port busy, listening on reply port only")
+                + "\nFeedback received: " + (engine.feedbackSeen() ? "yes" : "not yet")
+                + "\n\nFor feedback, tick Enable Feedback in MADRIX: Preferences > Remote Control > OSC.";
+        new AlertDialog.Builder(this).setTitle("Connection").setMessage(msg)
+                .setPositiveButton("OK", null).show();
+    }
+
+    private LinearLayout formColumn() {
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(20), dp(8), dp(20), dp(8));
+        return col;
+    }
+
+    private EditText addField(LinearLayout parent, String label, String value, int inputType) {
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setPadding(0, dp(10), 0, 0);
+        parent.addView(l);
+        EditText e = new EditText(this);
+        e.setText(value);
+        e.setInputType(inputType);
+        e.setSingleLine(true);
+        parent.addView(e);
+        return e;
+    }
+
+    private void showSettings() {
+        LinearLayout col = formColumn();
+        int num = InputType.TYPE_CLASS_NUMBER;
+        int dec = InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL;
+        EditText host = addField(col, "MADRIX IP address", prefs.getString("host", DEFAULT_HOST),
+                InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        EditText port = addField(col, "MADRIX OSC port", String.valueOf(prefs.getInt("port", DEFAULT_PORT)), num);
+        EditText fb = addField(col, "Feedback port (MADRIX Destination Network Port)",
+                String.valueOf(prefs.getInt("fbport", DEFAULT_FB_PORT)), num);
+        EditText step = addField(col, "Speed step (% of normal speed)", prefs.getString("step", "10"), dec);
+        EditText def = addField(col, "Reset speed (1.0 = normal)", prefs.getString("defspeed", "1.0"),
+                dec | InputType.TYPE_NUMBER_FLAG_SIGNED);
+
+        TextView tl = new TextView(this);
+        tl.setText("Speed buttons control");
+        tl.setPadding(0, dp(12), 0, 0);
+        col.addView(tl);
+        RadioGroup rg = new RadioGroup(this);
+        String[] codes = {"A", "B", "AB"};
+        String[] names = {"Deck A", "Deck B", "Both decks"};
+        String cur = prefs.getString("target", "A");
+        for (int i = 0; i < codes.length; i++) {
+            RadioButton rb = new RadioButton(this);
+            rb.setText(names[i]);
+            rb.setId(View.generateViewId());
+            rb.setTag(codes[i]);
+            rg.addView(rb);
+            if (codes[i].equals(cur)) {
+                rb.setChecked(true);
+            }
+        }
+        col.addView(rg);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(col);
+        new AlertDialog.Builder(this)
+                .setTitle("Settings")
+                .setView(sv)
+                .setPositiveButton("Save", (d, w) -> {
+                    SharedPreferences.Editor ed = prefs.edit();
+                    String h = host.getText().toString().trim();
+                    if (!h.isEmpty()) {
+                        ed.putString("host", h);
+                    }
+                    ed.putInt("port", parseInt(port, DEFAULT_PORT));
+                    ed.putInt("fbport", parseInt(fb, DEFAULT_FB_PORT));
+                    ed.putString("step", String.valueOf(Math.max(0.1, parseDouble(step, 10))));
+                    ed.putString("defspeed", String.valueOf(Math.max(-20, Math.min(20, parseDouble(def, 1.0)))));
+                    View checked = rg.findViewById(rg.getCheckedRadioButtonId());
+                    if (checked != null) {
+                        ed.putString("target", String.valueOf(checked.getTag()));
+                    }
+                    ed.apply();
+                    applySettings();
+                    refreshButtons();
+                    updateStatus();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private static int parseInt(EditText e, int fallback) {
+        try {
+            int v = Integer.parseInt(e.getText().toString().trim());
+            return v > 0 && v < 65536 ? v : fallback;
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
+    private static double parseDouble(EditText e, double fallback) {
+        try {
+            return Double.parseDouble(e.getText().toString().trim().replace(',', '.'));
+        } catch (NumberFormatException ex) {
+            return fallback;
+        }
+    }
+
+    // ---------- press-and-hold editor ----------
+
+    private void showEditor(DeckLayout.Btn b) {
+        LinearLayout col = formColumn();
+
+        TextView info = new TextView(this);
+        info.setText(Describe.button(b, layout, engine, client.host(), client.port()));
+        info.setTextIsSelectable(true);
+        info.setPadding(0, 0, 0, dp(8));
+        col.addView(info);
+
+        boolean dynamicLabel = b.kind.startsWith("speed_");
+        EditText label = null;
+        if (!dynamicLabel) {
+            TextView l = new TextView(this);
+            l.setText("Label (new line for a second line)");
+            l.setPadding(0, dp(8), 0, 0);
+            col.addView(l);
+            label = new EditText(this);
+            label.setText(b.label);
+            label.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
+            label.setSingleLine(false);
+            label.setMaxLines(3);
+            col.addView(label);
+        }
+
+        TextView cl = new TextView(this);
+        cl.setText("Colour");
+        cl.setPadding(0, dp(10), 0, 0);
+        col.addView(cl);
+
+        LinearLayout hexRow = new LinearLayout(this);
+        hexRow.setOrientation(LinearLayout.HORIZONTAL);
+        hexRow.setGravity(Gravity.CENTER_VERTICAL);
+        View preview = new View(this);
+        GradientDrawable pd = new GradientDrawable();
+        pd.setCornerRadius(dp(6));
+        pd.setColor(0xFF000000 | b.bg);
+        pd.setStroke(dp(1), 0xFF888888);
+        preview.setBackground(pd);
+        hexRow.addView(preview, new LinearLayout.LayoutParams(dp(44), dp(36)));
+        EditText hex = new EditText(this);
+        hex.setText(DeckLayout.colorHex(b.bg));
+        hex.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        hex.setSingleLine(true);
+        LinearLayout.LayoutParams hp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        hp.leftMargin = dp(10);
+        hexRow.addView(hex, hp);
+        col.addView(hexRow);
+        hex.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int st, int c, int a) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int st, int b2, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(Editable s) {
+                int c = DeckLayout.parseColor(s.toString(), -1);
+                if (c >= 0) {
+                    pd.setColor(0xFF000000 | c);
+                }
+            }
+        });
+
+        HorizontalScrollView hs = new HorizontalScrollView(this);
+        LinearLayout sw = new LinearLayout(this);
+        sw.setOrientation(LinearLayout.HORIZONTAL);
+        sw.setPadding(0, dp(8), 0, dp(4));
+        for (int c : SWATCHES) {
+            View s = new View(this);
+            GradientDrawable g = new GradientDrawable();
+            g.setCornerRadius(dp(6));
+            g.setColor(0xFF000000 | c);
+            g.setStroke(dp(1), 0xFF888888);
+            s.setBackground(g);
+            s.setOnClickListener(v -> hex.setText(DeckLayout.colorHex(c)));
+            LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(dp(38), dp(38));
+            sp.rightMargin = dp(6);
+            sw.addView(s, sp);
+        }
+        hs.addView(sw);
+        col.addView(hs);
+
+        ScrollView sv = new ScrollView(this);
+        sv.addView(col);
+        final EditText labelField = label;
+        String title = layout.pages.get(pageIndex).name + "  row " + b.row + ", col " + b.col;
+        new AlertDialog.Builder(this)
+                .setTitle(title)
+                .setView(sv)
+                .setPositiveButton("Save", (d, w) -> {
+                    if (labelField != null) {
+                        b.label = labelField.getText().toString().trim();
+                    }
+                    b.bg = DeckLayout.parseColor(hex.getText().toString(), b.bg);
+                    saveLayout();
+                    renderPage();
+                })
+                .setNeutralButton("Original", (d, w) -> {
+                    b.label = b.origLabel;
+                    b.bg = b.origBg;
+                    saveLayout();
+                    renderPage();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmResetEdits() {
+        new AlertDialog.Builder(this)
+                .setTitle("Reset all button edits?")
+                .setMessage("Labels and colours go back to how they were imported.")
+                .setPositiveButton("Reset", (d, w) -> {
+                    for (DeckLayout.Page p : layout.pages) {
+                        for (DeckLayout.Btn b : p.buttons) {
+                            b.label = b.origLabel;
+                            b.bg = b.origBg;
+                        }
+                    }
+                    saveLayout();
+                    renderPage();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void confirmRestoreBuiltIn() {
+        new AlertDialog.Builder(this)
+                .setTitle("Restore built-in layout?")
+                .setMessage("Replaces the current layout, including any imported file and button edits.")
+                .setPositiveButton("Restore", (d, w) -> {
+                    //noinspection ResultOfMethodCallIgnored
+                    new File(getFilesDir(), LAYOUT_FILE).delete();
+                    layout = loadLayout();
+                    pageIndex = 0;
+                    prefs.edit().putInt("page", 0).apply();
+                    renderPage();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    // ---------- Companion import ----------
+
+    private void startImport() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        try {
+            startActivityForResult(i, REQ_IMPORT);
+        } catch (Exception e) {
+            Toast.makeText(this, "No file picker available", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_IMPORT || resultCode != RESULT_OK || data == null || data.getData() == null) {
+            return;
+        }
+        Uri uri = data.getData();
+        CompanionImporter.Result r;
+        try {
+            byte[] raw = readBytes(getContentResolver().openInputStream(uri));
+            if (raw.length > 2 && (raw[0] & 0xFF) == 0x1F && (raw[1] & 0xFF) == 0x8B) {
+                raw = readBytes(new GZIPInputStream(new ByteArrayInputStream(raw)));
+            }
+            r = CompanionImporter.importConfig(new JSONObject(new String(raw, StandardCharsets.UTF_8)));
+        } catch (Exception e) {
+            new AlertDialog.Builder(this).setTitle("Import failed")
+                    .setMessage("That file couldn't be read as a Companion export.\n\n" + e.getMessage())
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        if (r.layout.pages.isEmpty()) {
+            new AlertDialog.Builder(this).setTitle("Nothing to import")
+                    .setMessage("No buttons were found in that file.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        StringBuilder msg = new StringBuilder();
+        msg.append("Found ").append(r.layout.pages.size()).append(" page(s), ")
+                .append(r.layout.buttonCount()).append(" buttons.");
+        if (r.unsupported > 0) {
+            msg.append("\n").append(r.unsupported).append(" action(s) aren't supported and will be skipped "
+                    + "(press and hold a button to see which).");
+        }
+        for (String n : new java.util.LinkedHashSet<>(r.notes)) {
+            msg.append("\n").append(n).append('.');
+        }
+        boolean hostDiffers = r.host != null && (!r.host.equals(client.host()) || r.port != client.port());
+        if (hostDiffers) {
+            msg.append("\n\nThe file sends to MADRIX at ").append(r.host).append(':').append(r.port)
+                    .append(". The app will switch to that address.");
+        }
+        msg.append("\n\nThis replaces the current layout and any button edits.");
+        final CompanionImporter.Result result = r;
+        new AlertDialog.Builder(this)
+                .setTitle("Import Companion layout?")
+                .setMessage(msg.toString())
+                .setPositiveButton("Import", (d, w) -> {
+                    layout = result.layout;
+                    saveLayout();
+                    if (hostDiffers) {
+                        SharedPreferences.Editor ed = prefs.edit().putString("host", result.host);
+                        if (result.port > 0) {
+                            ed.putInt("port", result.port);
+                        }
+                        ed.apply();
+                        applySettings();
+                    }
+                    pageIndex = 0;
+                    prefs.edit().putInt("page", 0).apply();
+                    renderPage();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    // ---------- lifecycle ----------
+
+    @SuppressWarnings("deprecation")
+    private void hideSystemBars() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.hide(WindowInsets.Type.systemBars());
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+                            | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
+        }
+    }
+
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            hideSystemBars();
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        client.stop();
+        engine.shutdown();
+        super.onDestroy();
+    }
+}
