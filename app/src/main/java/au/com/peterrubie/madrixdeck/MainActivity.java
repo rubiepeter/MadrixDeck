@@ -82,6 +82,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         engine = new Engine(client, this);
         client.setIncoming(engine::onIncoming);
         applySettings();
+        engine.restoreState(prefs.getString("state", null));
 
         buildUi();
         layout = loadLayout();
@@ -215,12 +216,33 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             // Text sits about halfway down the bar, so it needs roughly 40% of the corner radius.
             int side = Math.max(dp(8), Math.round(top * 0.42f));
             bar.setPadding(side, dp(2), side, dp(4));
-            root.setPadding(dp(4), dp(4), dp(4), Math.max(dp(4), Math.round(bottom * 0.12f)));
+            root.setPadding(dp(4), dp(4), dp(4), bottomPadding(bottom));
             return insets;
         });
 
         setContentView(root);
         root.requestApplyInsets();
+    }
+
+    /**
+     * Bottom padding so the corner buttons' rounded corners sit inside the screen's rounded
+     * corner. Each button's corner circle (10 dp radius, inset 3 dp + 4 dp side padding) must
+     * fit inside the screen corner circle of radius r.
+     */
+    private int bottomPadding(int r) {
+        int min = dp(4);
+        if (r <= 0) {
+            return min;
+        }
+        float rb = dp(10);
+        float inset = dp(4) + dp(3) + rb; // side padding + button inset + button corner radius
+        float dx = r - inset;
+        if (dx <= 0 || r - rb <= dx) {
+            return Math.max(min, dx <= 0 ? min : Math.round(r - rb));
+        }
+        float dy = (float) Math.sqrt((r - rb) * (r - rb) - dx * dx);
+        float pad = r - dy - (dp(3) + rb) + dp(2); // minus button inset and corner radius, plus a margin
+        return Math.max(min, Math.round(pad));
     }
 
     private void renderPage() {
@@ -289,7 +311,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             case DeckLayout.KIND_SPEED_UP:
                 return "SPEED\n+ " + engine.stepText();
             case DeckLayout.KIND_SPEED_RESET:
-                return "RESET\n" + engine.speedText();
+                return engine.speedText() + "\nRESET";
             default:
                 return b.label == null ? "" : b.label;
         }
@@ -332,7 +354,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             }
             refreshButtons();
             updateStatus();
-            prefs.edit().putInt("fadems", engine.fadeMs).apply();
+            prefs.edit().putInt("fadems", engine.fadeMs).putString("state", engine.saveState()).apply();
         });
     }
 

@@ -135,16 +135,15 @@ public final class Engine {
                 fades.execute(() -> runFade(bank, path, from.clone(), to, ms, gen));
             } else {
                 fading.put(bank, false);
-                if (sender.send(OscMessage.of(path, to[0], to[1], to[2]))) {
-                    colourNow.put(bank, to);
-                }
+                sender.send(OscMessage.of(path, to[0], to[1], to[2]));
+                colourNow.put(bank, to);
             }
             return;
         }
-        boolean ok = sender.send(new OscMessage(path, args));
-        if (ok) {
-            applyState(path, args, false);
-        }
+        sender.send(new OscMessage(path, args));
+        // Track the selection even if the send failed, so the highlight always shows
+        // what was last pressed (the top bar shows when sending isn't working).
+        applyState(path, args, false);
     }
 
     private void runFade(int bank, String path, int[] from, int[] to, int ms, int gen) {
@@ -237,9 +236,8 @@ public final class Engine {
             double cur = speed[d] != null ? speed[d] : defaultSpeed;
             double next = direction == 0 ? defaultSpeed : cur + direction * stepPercent / 100.0;
             next = Math.max(-20.0, Math.min(20.0, Math.round(next * 10000.0) / 10000.0));
-            if (sender.send(OscMessage.of("/Deck" + DECK_NAMES[d] + "/SpeedMaster", (float) next))) {
-                speed[d] = next;
-            }
+            sender.send(OscMessage.of("/Deck" + DECK_NAMES[d] + "/SpeedMaster", (float) next));
+            speed[d] = next;
         }
         notifyChanged();
     }
@@ -334,6 +332,14 @@ public final class Engine {
         if (DeckLayout.KIND_FADE.equals(b.kind)) {
             return b.fadeMs == fadeMs;
         }
+        if (DeckLayout.KIND_SPEED_RESET.equals(b.kind)) {
+            for (int d : targetDecks()) {
+                if (speed[d] != null && Math.abs(speed[d] - defaultSpeed) > 0.00005) {
+                    return true;
+                }
+            }
+            return false;
+        }
         if (!DeckLayout.KIND_ACTION.equals(b.kind)) {
             return false;
         }
@@ -374,6 +380,59 @@ public final class Engine {
             return t != null && t[0] == rgb[0] && t[1] == rgb[1] && t[2] == rgb[2];
         }
         return false;
+    }
+
+    /** Selection to remember between launches: places, storages, speeds and colour targets. */
+    public String saveState() {
+        StringBuilder sb = new StringBuilder();
+        for (int d = 0; d < 2; d++) {
+            if (activePlace[d] != null) {
+                sb.append("place").append(d).append('=').append(activePlace[d]).append(';');
+            }
+            if (activeStorage[d] != null) {
+                sb.append("storage").append(d).append('=').append(activeStorage[d]).append(';');
+            }
+            if (speed[d] != null) {
+                sb.append("speed").append(d).append('=').append(speed[d]).append(';');
+            }
+        }
+        for (Map.Entry<Integer, int[]> e : colourTarget.entrySet()) {
+            int[] c = e.getValue();
+            sb.append("colour").append(e.getKey()).append('=').append(c[0]).append(',').append(c[1]).append(',')
+                    .append(c[2]).append(';');
+        }
+        return sb.toString();
+    }
+
+    public void restoreState(String state) {
+        if (state == null) {
+            return;
+        }
+        for (String part : state.split(";")) {
+            int eq = part.indexOf('=');
+            if (eq < 0) {
+                continue;
+            }
+            String key = part.substring(0, eq);
+            String val = part.substring(eq + 1);
+            try {
+                if (key.startsWith("place")) {
+                    activePlace[Integer.parseInt(key.substring(5))] = Integer.parseInt(val);
+                } else if (key.startsWith("storage")) {
+                    activeStorage[Integer.parseInt(key.substring(7))] = Integer.parseInt(val);
+                } else if (key.startsWith("speed")) {
+                    speed[Integer.parseInt(key.substring(5))] = Double.parseDouble(val);
+                } else if (key.startsWith("colour")) {
+                    String[] c = val.split(",");
+                    // Highlight only: the first colour press after launch still snaps, since the
+                    // rig may have changed while the app was closed.
+                    colourTarget.put(Integer.parseInt(key.substring(6)),
+                            new int[]{Integer.parseInt(c[0]), Integer.parseInt(c[1]), Integer.parseInt(c[2])});
+                }
+            } catch (RuntimeException ignored) {
+                // skip a damaged entry
+            }
+        }
     }
 
     /** Speed of the first target deck as a percentage of normal (1.0 = 100%). */
