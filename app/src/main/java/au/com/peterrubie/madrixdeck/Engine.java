@@ -178,6 +178,56 @@ public final class Engine {
         }
     }
 
+    // ---------- live colour adjustment from the editor ----------
+
+    private final java.util.concurrent.atomic.AtomicReference<Object[]> pendingLive =
+            new java.util.concurrent.atomic.AtomicReference<>();
+    private final java.util.concurrent.atomic.AtomicBoolean liveScheduled =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /**
+     * Sends a colour immediately (no crossfade) while the user drags the RGB sliders.
+     * Rapid calls are coalesced so only the latest value is sent.
+     */
+    public void sendLiveColour(String path, int r, int g, int b) {
+        Matcher cm = COLOUR.matcher(path);
+        if (!cm.matches() || !"Rgb".equals(cm.group(2))) {
+            return;
+        }
+        int bank = Integer.parseInt(cm.group(1));
+        gen(bank).incrementAndGet(); // stop any running fade on this bank
+        fading.put(bank, false);
+        pendingLive.set(new Object[]{path, bank, new int[]{clampByte(r), clampByte(g), clampByte(b)}});
+        if (liveScheduled.compareAndSet(false, true)) {
+            actions.execute(this::flushLive);
+        }
+    }
+
+    private void flushLive() {
+        liveScheduled.set(false);
+        Object[] p = pendingLive.getAndSet(null);
+        if (p == null) {
+            return;
+        }
+        int bank = (Integer) p[1];
+        int[] c = (int[]) p[2];
+        if (sender.send(OscMessage.of((String) p[0], c[0], c[1], c[2]))) {
+            colourNow.put(bank, c);
+            colourTarget.put(bank, c.clone());
+            notifyChanged();
+        }
+    }
+
+    /** Colour MADRIX is currently showing for a global colour bank, or null if unknown. */
+    public int[] currentColour(String path) {
+        Matcher cm = COLOUR.matcher(path);
+        if (!cm.matches()) {
+            return null;
+        }
+        int[] c = colourNow.get(Integer.parseInt(cm.group(1)));
+        return c == null ? null : c.clone();
+    }
+
     private AtomicInteger gen(int bank) {
         return fadeGen.computeIfAbsent(bank, k -> new AtomicInteger());
     }

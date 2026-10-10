@@ -474,6 +474,19 @@ public final class CompanionImporter {
             page.buttons.add(special(row, 2, DeckLayout.KIND_SPEED_RESET, 0x44505c, 0));
             page.buttons.add(special(row, 3, DeckLayout.KIND_SPEED_UP, 0x2b3a4a, 0));
             page.rows = Math.max(page.rows, row);
+            // Keep the page button in the bottom-right corner, where it sits on other pages.
+            if (page.cols >= 4 && page.at(row, page.cols) == null) {
+                DeckLayout.Btn nav = null;
+                for (DeckLayout.Btn b : page.buttons) {
+                    if (b.row == row - 1 && DeckLayout.isPageButton(b) && (nav == null || b.col == page.cols)) {
+                        nav = b;
+                    }
+                }
+                if (nav != null) {
+                    nav.row = row;
+                    nav.col = page.cols;
+                }
+            }
         }
 
         if (!bankFirstRow.isEmpty() && !hasFade && page.cols >= 3) {
@@ -525,7 +538,7 @@ public final class CompanionImporter {
         b.fg = 0xFFFFFF;
         b.fadeMs = fadeMs;
         if (DeckLayout.KIND_FADE.equals(kind)) {
-            b.label = fadeMs == 0 ? "SNAP" : (fadeMs / 1000) + "s";
+            b.label = DeckLayout.fadeLabel(fadeMs);
         }
         b.origLabel = b.label;
         return b;

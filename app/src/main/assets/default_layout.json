@@ -693,16 +693,22 @@
         {
           "row":8,
           "col":4,
-          "label":"COLS",
-          "origLabel":"COLS",
-          "bg":"#990000",
-          "origBg":"#990000",
+          "label":"32",
+          "origLabel":"32",
+          "bg":"#000099",
+          "origBg":"#000099",
           "fg":"#ffffff",
           "kind":"action",
           "actions":[
             {
-              "type":"page",
-              "page":2
+              "type":"osc",
+              "path":"/DeckA/Places/Index",
+              "args":[
+                {
+                  "t":"i",
+                  "v":31
+                }
+              ]
             }
           ]
         },
@@ -738,6 +744,22 @@
           "fg":"#ffffff",
           "kind":"speed_up",
           "actions":[]
+        },
+        {
+          "row":9,
+          "col":4,
+          "label":"COLS",
+          "origLabel":"COLS",
+          "bg":"#990000",
+          "origBg":"#990000",
+          "fg":"#ffffff",
+          "kind":"action",
+          "actions":[
+            {
+              "type":"page",
+              "page":2
+            }
+          ]
         }
       ]
     },

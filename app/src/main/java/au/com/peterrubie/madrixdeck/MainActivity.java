@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -17,15 +18,18 @@ import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.RoundedCorner;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.widget.Button;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -193,7 +197,30 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         grid.setOrientation(LinearLayout.VERTICAL);
         root.addView(grid, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
+        // Keep the top bar and bottom row clear of the screen's rounded corners.
+        root.setOnApplyWindowInsetsListener((v, insets) -> {
+            int top = 0;
+            int bottom = 0;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                RoundedCorner tl = insets.getRoundedCorner(RoundedCorner.POSITION_TOP_LEFT);
+                RoundedCorner tr = insets.getRoundedCorner(RoundedCorner.POSITION_TOP_RIGHT);
+                RoundedCorner bl = insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_LEFT);
+                RoundedCorner br = insets.getRoundedCorner(RoundedCorner.POSITION_BOTTOM_RIGHT);
+                top = Math.max(tl == null ? 0 : tl.getRadius(), tr == null ? 0 : tr.getRadius());
+                bottom = Math.max(bl == null ? 0 : bl.getRadius(), br == null ? 0 : br.getRadius());
+            } else {
+                top = dp(24);
+                bottom = dp(24);
+            }
+            // Text sits about halfway down the bar, so it needs roughly 40% of the corner radius.
+            int side = Math.max(dp(8), Math.round(top * 0.42f));
+            bar.setPadding(side, dp(2), side, dp(4));
+            root.setPadding(dp(4), dp(4), dp(4), Math.max(dp(4), Math.round(bottom * 0.12f)));
+            return insets;
+        });
+
         setContentView(root);
+        root.requestApplyInsets();
     }
 
     private void renderPage() {
@@ -476,22 +503,169 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
 
     // ---------- press-and-hold editor ----------
 
+    private TextView sectionLabel(LinearLayout parent, String text) {
+        TextView l = new TextView(this);
+        l.setText(text);
+        l.setTypeface(Typeface.DEFAULT_BOLD);
+        l.setPadding(0, dp(14), 0, dp(2));
+        parent.addView(l);
+        return l;
+    }
+
+    /** Three 0-255 sliders (R, G, B), each with a number box, kept in sync both ways. */
+    private final class RgbSliders {
+        final SeekBar[] bars = new SeekBar[3];
+        final EditText[] boxes = new EditText[3];
+        boolean updating;
+        Runnable onChange;
+
+        RgbSliders(LinearLayout parent, int[] start) {
+            String[] names = {"R", "G", "B"};
+            int[] tints = {0xFFFF5555, 0xFF55DD55, 0xFF5599FF};
+            for (int i = 0; i < 3; i++) {
+                final int idx = i;
+                LinearLayout row = new LinearLayout(MainActivity.this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                TextView n = new TextView(MainActivity.this);
+                n.setText(names[i]);
+                n.setTextColor(tints[i]);
+                n.setTypeface(Typeface.DEFAULT_BOLD);
+                row.addView(n, new LinearLayout.LayoutParams(dp(20), ViewGroup.LayoutParams.WRAP_CONTENT));
+                SeekBar bar = new SeekBar(MainActivity.this);
+                bar.setMax(255);
+                bar.setProgress(clamp255(start[i]));
+                bar.setProgressTintList(ColorStateList.valueOf(tints[i]));
+                bar.setThumbTintList(ColorStateList.valueOf(tints[i]));
+                row.addView(bar, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                EditText box = new EditText(MainActivity.this);
+                box.setInputType(InputType.TYPE_CLASS_NUMBER);
+                box.setSingleLine(true);
+                box.setText(String.valueOf(clamp255(start[i])));
+                row.addView(box, new LinearLayout.LayoutParams(dp(64), ViewGroup.LayoutParams.WRAP_CONTENT));
+                bars[i] = bar;
+                boxes[i] = box;
+                bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+                    @Override
+                    public void onProgressChanged(SeekBar sb, int progress, boolean fromUser) {
+                        if (updating) {
+                            return;
+                        }
+                        updating = true;
+                        boxes[idx].setText(String.valueOf(progress));
+                        updating = false;
+                        fire();
+                    }
+
+                    @Override
+                    public void onStartTrackingTouch(SeekBar sb) {
+                    }
+
+                    @Override
+                    public void onStopTrackingTouch(SeekBar sb) {
+                    }
+                });
+                box.addTextChangedListener(new SimpleWatcher() {
+                    @Override
+                    public void afterTextChanged(Editable s) {
+                        if (updating) {
+                            return;
+                        }
+                        int v;
+                        try {
+                            v = clamp255(Integer.parseInt(s.toString().trim()));
+                        } catch (NumberFormatException e) {
+                            return;
+                        }
+                        updating = true;
+                        bars[idx].setProgress(v);
+                        updating = false;
+                        fire();
+                    }
+                });
+                parent.addView(row);
+            }
+        }
+
+        int[] get() {
+            return new int[]{bars[0].getProgress(), bars[1].getProgress(), bars[2].getProgress()};
+        }
+
+        void set(int[] c) {
+            updating = true;
+            for (int i = 0; i < 3; i++) {
+                bars[i].setProgress(clamp255(c[i]));
+                boxes[i].setText(String.valueOf(clamp255(c[i])));
+            }
+            updating = false;
+        }
+
+        private void fire() {
+            if (onChange != null) {
+                onChange.run();
+            }
+        }
+    }
+
+    /** TextWatcher with empty defaults so callers only override afterTextChanged. */
+    private abstract static class SimpleWatcher implements TextWatcher {
+        @Override
+        public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+        }
+
+        @Override
+        public void onTextChanged(CharSequence s, int start, int before, int count) {
+        }
+    }
+
+    private static int clamp255(int v) {
+        return Math.max(0, Math.min(255, v));
+    }
+
+    private static int[] rgbOf(int color) {
+        return new int[]{(color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF};
+    }
+
+    private static int colorOf(int[] rgb) {
+        return (clamp255(rgb[0]) << 16) | (clamp255(rgb[1]) << 8) | clamp255(rgb[2]);
+    }
+
+    private static int argInt(Object o) {
+        return o instanceof Number ? (int) Math.round(((Number) o).doubleValue()) : 0;
+    }
+
+    private RadioGroup targetGroup(LinearLayout parent) {
+        RadioGroup rg = new RadioGroup(this);
+        String[] codes = {"A", "B", "AB"};
+        String[] names = {"Deck A", "Deck B", "Both decks"};
+        String cur = prefs.getString("target", "A");
+        for (int i = 0; i < codes.length; i++) {
+            RadioButton rb = new RadioButton(this);
+            rb.setText(names[i]);
+            rb.setId(View.generateViewId());
+            rb.setTag(codes[i]);
+            rg.addView(rb);
+            if (codes[i].equals(cur)) {
+                rb.setChecked(true);
+            }
+        }
+        parent.addView(rg);
+        return rg;
+    }
+
     private void showEditor(DeckLayout.Btn b) {
         LinearLayout col = formColumn();
 
         TextView info = new TextView(this);
         info.setText(Describe.button(b, layout, engine, client.host(), client.port()));
         info.setTextIsSelectable(true);
-        info.setPadding(0, 0, 0, dp(8));
         col.addView(info);
 
+        // Label (speed buttons generate their own)
         boolean dynamicLabel = b.kind.startsWith("speed_");
         EditText label = null;
         if (!dynamicLabel) {
-            TextView l = new TextView(this);
-            l.setText("Label (new line for a second line)");
-            l.setPadding(0, dp(8), 0, 0);
-            col.addView(l);
+            sectionLabel(col, "Label (new line for a second line)");
             label = new EditText(this);
             label.setText(b.label);
             label.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_MULTI_LINE);
@@ -500,11 +674,62 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             col.addView(label);
         }
 
-        TextView cl = new TextView(this);
-        cl.setText("Colour");
-        cl.setPadding(0, dp(10), 0, 0);
-        col.addView(cl);
+        int dec = InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL;
 
+        // Crossfade time
+        EditText fadeField = null;
+        if (DeckLayout.KIND_FADE.equals(b.kind)) {
+            sectionLabel(col, "Crossfade time (seconds, 0 = snap)");
+            fadeField = new EditText(this);
+            fadeField.setInputType(dec);
+            fadeField.setSingleLine(true);
+            fadeField.setText(trimNumber(b.fadeMs / 1000.0));
+            col.addView(fadeField);
+        }
+
+        // Speed step / reset
+        EditText stepField = null;
+        EditText resetField = null;
+        RadioGroup targetRg = null;
+        if (DeckLayout.KIND_SPEED_DOWN.equals(b.kind) || DeckLayout.KIND_SPEED_UP.equals(b.kind)) {
+            sectionLabel(col, "Speed step (% of normal speed, used by both speed buttons)");
+            stepField = new EditText(this);
+            stepField.setInputType(dec);
+            stepField.setSingleLine(true);
+            stepField.setText(trimNumber(engine.stepPercent));
+            col.addView(stepField);
+        }
+        if (DeckLayout.KIND_SPEED_RESET.equals(b.kind)) {
+            sectionLabel(col, "Reset speed (1.0 = normal)");
+            resetField = new EditText(this);
+            resetField.setInputType(dec | InputType.TYPE_NUMBER_FLAG_SIGNED);
+            resetField.setSingleLine(true);
+            resetField.setText(trimNumber(engine.defaultSpeed));
+            col.addView(resetField);
+            sectionLabel(col, "Speed buttons control");
+            targetRg = targetGroup(col);
+        }
+
+        // MADRIX output colour, sent live while adjusting
+        final DeckLayout.Act colourAct = DeckLayout.colourAction(b);
+        final RgbSliders output;
+        final boolean[] previewed = {false};
+        final int[] before = colourAct == null ? null : engine.currentColour(colourAct.path);
+        if (colourAct != null) {
+            sectionLabel(col, "MADRIX output (sent live as you adjust)");
+            output = new RgbSliders(col, new int[]{argInt(colourAct.args.get(0)), argInt(colourAct.args.get(1)),
+                    argInt(colourAct.args.get(2))});
+            output.onChange = () -> {
+                int[] c = output.get();
+                previewed[0] = true;
+                engine.sendLiveColour(colourAct.path, c[0], c[1], c[2]);
+            };
+        } else {
+            output = null;
+        }
+
+        // Button colour
+        sectionLabel(col, "Button colour");
         LinearLayout hexRow = new LinearLayout(this);
         hexRow.setOrientation(LinearLayout.HORIZONTAL);
         hexRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -523,23 +748,41 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         hp.leftMargin = dp(10);
         hexRow.addView(hex, hp);
         col.addView(hexRow);
-        hex.addTextChangedListener(new TextWatcher() {
-            @Override
-            public void beforeTextChanged(CharSequence s, int st, int c, int a) {
-            }
 
-            @Override
-            public void onTextChanged(CharSequence s, int st, int b2, int c) {
+        RgbSliders buttonRgb = new RgbSliders(col, rgbOf(b.bg));
+        final boolean[] syncing = {false};
+        buttonRgb.onChange = () -> {
+            if (syncing[0]) {
+                return;
             }
-
+            int c = colorOf(buttonRgb.get());
+            syncing[0] = true;
+            hex.setText(DeckLayout.colorHex(c));
+            syncing[0] = false;
+            pd.setColor(0xFF000000 | c);
+        };
+        hex.addTextChangedListener(new SimpleWatcher() {
             @Override
             public void afterTextChanged(Editable s) {
                 int c = DeckLayout.parseColor(s.toString(), -1);
-                if (c >= 0) {
-                    pd.setColor(0xFF000000 | c);
+                if (c < 0) {
+                    return;
+                }
+                pd.setColor(0xFF000000 | c);
+                if (!syncing[0]) {
+                    syncing[0] = true;
+                    buttonRgb.set(rgbOf(c));
+                    syncing[0] = false;
                 }
             }
         });
+
+        if (output != null) {
+            Button match = new Button(this);
+            match.setText("Match button to output");
+            match.setOnClickListener(v -> hex.setText(DeckLayout.colorHex(colorOf(output.get()))));
+            col.addView(match);
+        }
 
         HorizontalScrollView hs = new HorizontalScrollView(this);
         LinearLayout sw = new LinearLayout(this);
@@ -562,27 +805,102 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
 
         ScrollView sv = new ScrollView(this);
         sv.addView(col);
+
         final EditText labelField = label;
-        String title = layout.pages.get(pageIndex).name + "  row " + b.row + ", col " + b.col;
+        final EditText fadeF = fadeField;
+        final EditText stepF = stepField;
+        final EditText resetF = resetField;
+        final RadioGroup targetF = targetRg;
+        final boolean[] saved = {false};
+        String title = Describe.shortName(b, layout) + " (row " + b.row + ", column " + b.col + ")";
+
         new AlertDialog.Builder(this)
                 .setTitle(title)
                 .setView(sv)
                 .setPositiveButton("Save", (d, w) -> {
+                    saved[0] = true;
                     if (labelField != null) {
                         b.label = labelField.getText().toString().trim();
                     }
                     b.bg = DeckLayout.parseColor(hex.getText().toString(), b.bg);
+                    if (colourAct != null && output != null) {
+                        int[] c = output.get();
+                        boolean changed = argInt(colourAct.args.get(0)) != c[0] || argInt(colourAct.args.get(1)) != c[1]
+                                || argInt(colourAct.args.get(2)) != c[2];
+                        if (changed) {
+                            if (colourAct.origArgs == null) {
+                                colourAct.origArgs = new ArrayList<>(colourAct.args);
+                            }
+                            colourAct.args.set(0, c[0]);
+                            colourAct.args.set(1, c[1]);
+                            colourAct.args.set(2, c[2]);
+                        }
+                    }
+                    if (fadeF != null) {
+                        int oldMs = b.fadeMs;
+                        int newMs = (int) Math.round(Math.max(0, Math.min(60, parseDouble(fadeF, oldMs / 1000.0))) * 1000);
+                        String oldAuto = DeckLayout.fadeLabel(oldMs);
+                        b.fadeMs = newMs;
+                        if (b.label.equals(oldAuto)) {
+                            b.label = DeckLayout.fadeLabel(newMs);
+                        }
+                        if (b.origLabel.equals(oldAuto)) {
+                            b.origLabel = DeckLayout.fadeLabel(newMs);
+                        }
+                        if (engine.fadeMs == oldMs) {
+                            engine.fadeMs = newMs;
+                            prefs.edit().putInt("fadems", newMs).apply();
+                        }
+                    }
+                    SharedPreferences.Editor ed = prefs.edit();
+                    if (stepF != null) {
+                        ed.putString("step", String.valueOf(Math.max(0.1, parseDouble(stepF, engine.stepPercent))));
+                    }
+                    if (resetF != null) {
+                        ed.putString("defspeed", String.valueOf(Math.max(-20, Math.min(20,
+                                parseDouble(resetF, engine.defaultSpeed)))));
+                    }
+                    if (targetF != null) {
+                        View checked = targetF.findViewById(targetF.getCheckedRadioButtonId());
+                        if (checked != null) {
+                            ed.putString("target", String.valueOf(checked.getTag()));
+                        }
+                    }
+                    ed.apply();
+                    applySettings();
                     saveLayout();
                     renderPage();
                 })
                 .setNeutralButton("Original", (d, w) -> {
                     b.label = b.origLabel;
                     b.bg = b.origBg;
+                    if (colourAct != null && colourAct.origArgs != null) {
+                        colourAct.args.clear();
+                        colourAct.args.addAll(colourAct.origArgs);
+                        colourAct.origArgs = null;
+                    }
                     saveLayout();
                     renderPage();
                 })
                 .setNegativeButton("Cancel", null)
+                .setOnDismissListener(d -> {
+                    // Not saved: put the rig back to the colour it showed before live adjusting.
+                    if (!saved[0] && previewed[0] && before != null && colourAct != null) {
+                        engine.sendLiveColour(colourAct.path, before[0], before[1], before[2]);
+                    }
+                })
                 .show();
+    }
+
+    private static String trimNumber(double v) {
+        if (v == Math.rint(v)) {
+            return String.valueOf((long) v);
+        }
+        String s = String.format(java.util.Locale.US, "%.3f", v);
+        while (s.endsWith("0")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        return s;
     }
 
     private void confirmResetEdits() {

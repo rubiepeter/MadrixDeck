@@ -7,7 +7,13 @@ even on a network with no internet.
 ## Using it
 
 - Tap a button to fire it. The current place stays highlighted.
-- Press and hold a button to see what it sends, change its label or colour.
+- Press and hold a button to see what it sends and change its label or button colour.
+  - Colour buttons: MADRIX output R/G/B sliders, sent live while you adjust
+    (Cancel puts the rig back). The button colour has its own sliders, plus
+    "Match button to output".
+  - SNAP / 1s / 2s: set the crossfade time in seconds.
+  - SPEED − / +: set the speed step. RESET: set the reset speed and target deck.
+  - Original restores the imported label, colour and RGB.
 - Back gesture, or tap the top bar, opens the menu: Settings, Import Companion file,
   Reset all button edits, Restore built-in layout, Connection info, Exit.
 
@@ -39,5 +45,8 @@ and COLOUR headers are added automatically. Importing replaces button edits.
 ## Build
 
 Every push builds the APK in GitHub Actions (Actions tab > latest "Build APK" run >
-Artifacts > MadrixDeck-apk). Each build has a fresh debug signing key, so uninstall
-the previous MADRIX Deck before installing a new build.
+Artifacts > MadrixDeck-apk, on the website; the GitHub app doesn't show artifacts).
+
+Builds are signed with app/madrixdeck-debug.keystore, so a new build installs over the
+previous one and keeps your button edits. (Builds before v2.1 used a random key:
+uninstall those once.)

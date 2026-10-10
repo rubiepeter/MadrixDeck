@@ -51,6 +51,41 @@ public final class Describe {
         return sb.toString();
     }
 
+    /** Short name for the editor title, e.g. "Place 29", "Colour A", "Go to COL", "Speed +". */
+    public static String shortName(DeckLayout.Btn b, DeckLayout layout) {
+        switch (b.kind) {
+            case DeckLayout.KIND_SPEED_DOWN: return "Speed −";
+            case DeckLayout.KIND_SPEED_UP: return "Speed +";
+            case DeckLayout.KIND_SPEED_RESET: return "Speed reset";
+            case DeckLayout.KIND_FADE: return "Crossfade " + DeckLayout.fadeLabel(b.fadeMs);
+            default: break;
+        }
+        for (DeckLayout.Act a : b.actions) {
+            if (DeckLayout.Act.PAGE.equals(a.type)) {
+                DeckLayout.Page p = layout.pageByNumber(a.page);
+                return "Go to " + (p != null ? p.name : "page " + a.page);
+            }
+            if (DeckLayout.Act.PAGE_REL.equals(a.type)) {
+                return a.delta > 0 ? "Next page" : "Previous page";
+            }
+            if (!DeckLayout.Act.OSC.equals(a.type)) {
+                continue;
+            }
+            Integer v = a.args.isEmpty() || !(a.args.get(0) instanceof Number) ? null : ((Number) a.args.get(0)).intValue();
+            Matcher m = PLACE.matcher(a.path);
+            if (m.matches() && v != null) {
+                return "Place " + (v + 1);
+            }
+            m = COLOUR.matcher(a.path);
+            if (m.matches()) {
+                int bank = Integer.parseInt(m.group(1));
+                return "Colour " + (bank >= 1 && bank <= 26 ? String.valueOf((char) ('A' + bank - 1)) : String.valueOf(bank));
+            }
+        }
+        String label = b.label == null ? "" : b.label.replace('\n', ' ').trim();
+        return label.isEmpty() ? "Button" : label;
+    }
+
     public static String action(DeckLayout.Act a, DeckLayout layout) {
         switch (a.type) {
             case DeckLayout.Act.WAIT:

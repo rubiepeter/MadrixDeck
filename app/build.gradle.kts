@@ -10,8 +10,18 @@ android {
         applicationId = "au.com.peterrubie.madrixdeck"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0"
+        versionCode = 3
+        versionName = "2.1"
+    }
+
+    // Fixed key so each GitHub build installs over the previous one and keeps your edits.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("madrixdeck-debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {

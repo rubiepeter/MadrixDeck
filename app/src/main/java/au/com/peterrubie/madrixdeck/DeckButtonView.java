@@ -89,13 +89,52 @@ final class DeckButtonView extends View {
             canvas.drawRoundRect(rect, radius, radius, fill);
         }
 
+        int fgColor = Color.rgb((btn.fg >> 16) & 0xFF, (btn.fg >> 8) & 0xFF, btn.fg & 0xFF);
+        if (DeckLayout.isPageButton(btn)) {
+            float iconH = rect.height() * (text.isEmpty() ? 0.5f : 0.36f);
+            float cy = text.isEmpty() ? rect.centerY() : rect.top + rect.height() * 0.38f;
+            drawPageIcon(canvas, rect.centerX(), cy, iconH, fgColor, active ? lighten(bg, 0.22f) : (0xFF000000 | bg));
+            if (!text.isEmpty()) {
+                RectF lower = new RectF(rect.left, rect.top + rect.height() * 0.62f, rect.right, rect.bottom - rect.height() * 0.04f);
+                drawLabel(canvas, text.split("\n"), lower, fgColor, 0.62f);
+            }
+            return;
+        }
         if (text.isEmpty()) {
             return;
         }
-        String[] lines = text.split("\n");
-        float maxW = rect.width() * 0.84f;
-        float maxH = rect.height() * 0.78f;
-        float size = Math.min(rect.height() * 0.42f, 34 * density);
+        drawLabel(canvas, text.split("\n"), rect, fgColor, 0.42f);
+    }
+
+    /** Two stacked pages with an arrow: "go to another page". */
+    private void drawPageIcon(Canvas canvas, float cx, float cy, float h, int color, int fillBehind) {
+        float w = h * 0.78f;
+        float off = h * 0.16f;
+        float r = h * 0.1f;
+        border.setStrokeWidth(Math.max(2f * density, h * 0.07f));
+        border.setColor(color);
+        // back page, offset up and right
+        RectF back = new RectF(cx - w / 2 + off, cy - h / 2 - off * 0.5f, cx + w / 2 + off, cy + h / 2 - off * 0.5f);
+        canvas.drawRoundRect(back, r, r, border);
+        // front page, filled with the button colour so it hides the back page outline
+        RectF front = new RectF(cx - w / 2 - off * 0.5f, cy - h / 2 + off * 0.5f, cx + w / 2 - off * 0.5f, cy + h / 2 + off * 0.5f);
+        fill.setColor(fillBehind);
+        canvas.drawRoundRect(front, r, r, fill);
+        canvas.drawRoundRect(front, r, r, border);
+        // arrow across the front page
+        float ax1 = front.left + front.width() * 0.22f;
+        float ax2 = front.right - front.width() * 0.2f;
+        float ay = front.centerY();
+        float head = front.width() * 0.22f;
+        canvas.drawLine(ax1, ay, ax2, ay, border);
+        canvas.drawLine(ax2, ay, ax2 - head, ay - head, border);
+        canvas.drawLine(ax2, ay, ax2 - head, ay + head, border);
+    }
+
+    private void drawLabel(Canvas canvas, String[] lines, RectF area, int color, float heightFactor) {
+        float maxW = area.width() * 0.84f;
+        float maxH = area.height() * 0.78f;
+        float size = Math.min(area.height() * heightFactor, 34 * density);
         if (lines.length > 1) {
             size = Math.min(size, maxH / (lines.length * 1.15f));
         }
@@ -108,13 +147,13 @@ final class DeckButtonView extends View {
             size = Math.max(9 * density, size * maxW / widest);
             textPaint.setTextSize(size);
         }
-        textPaint.setColor(Color.rgb((btn.fg >> 16) & 0xFF, (btn.fg >> 8) & 0xFF, btn.fg & 0xFF));
+        textPaint.setColor(color);
         Paint.FontMetrics fm = textPaint.getFontMetrics();
         float lineH = (fm.descent - fm.ascent) * 1.05f;
         float total = lineH * lines.length;
-        float y = rect.centerY() - total / 2 - fm.ascent;
+        float y = area.centerY() - total / 2 - fm.ascent;
         for (String l : lines) {
-            canvas.drawText(l, rect.centerX(), y, textPaint);
+            canvas.drawText(l, area.centerX(), y, textPaint);
             y += lineH;
         }
     }

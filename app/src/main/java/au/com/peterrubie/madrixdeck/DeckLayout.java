@@ -72,6 +72,8 @@ public final class DeckLayout {
         public String type = OSC;
         public String path = "";
         public final List<Object> args = new ArrayList<>();
+        /** Arguments as imported, kept once the user edits args so "Original" can restore them. */
+        public List<Object> origArgs;
         public int page;
         public int delta;
         public int ms;
@@ -177,22 +179,10 @@ public final class DeckLayout {
                     switch (a.type) {
                         case Act.OSC: {
                             oa.put("path", a.path);
-                            JSONArray args = new JSONArray();
-                            for (Object v : a.args) {
-                                JSONObject arg = new JSONObject();
-                                if (v instanceof Integer) {
-                                    arg.put("t", "i");
-                                    arg.put("v", ((Integer) v).intValue());
-                                } else if (v instanceof Float) {
-                                    arg.put("t", "f");
-                                    arg.put("v", (double) ((Float) v).floatValue());
-                                } else {
-                                    arg.put("t", "s");
-                                    arg.put("v", String.valueOf(v));
-                                }
-                                args.put(arg);
+                            oa.put("args", argsToJson(a.args));
+                            if (a.origArgs != null) {
+                                oa.put("origArgs", argsToJson(a.origArgs));
                             }
-                            oa.put("args", args);
                             break;
                         }
                         case Act.PAGE: oa.put("page", a.page); break;
@@ -271,22 +261,9 @@ public final class DeckLayout {
                             a.delta = oa.optInt("delta", 0);
                             a.ms = oa.optInt("ms", 0);
                             a.note = str(oa, "note", "");
-                            JSONArray args = oa.optJSONArray("args");
-                            if (args != null) {
-                                for (int m = 0; m < args.length(); m++) {
-                                    JSONObject arg = args.optJSONObject(m);
-                                    if (arg == null) {
-                                        continue;
-                                    }
-                                    String t = str(arg, "t", "s");
-                                    if ("i".equals(t)) {
-                                        a.args.add(arg.optInt("v", 0));
-                                    } else if ("f".equals(t)) {
-                                        a.args.add((float) arg.optDouble("v", 0));
-                                    } else {
-                                        a.args.add(str(arg, "v", ""));
-                                    }
-                                }
+                            a.args.addAll(argsFromJson(oa.optJSONArray("args")));
+                            if (oa.optJSONArray("origArgs") != null) {
+                                a.origArgs = argsFromJson(oa.optJSONArray("origArgs"));
                             }
                             b.actions.add(a);
                         }
@@ -297,6 +274,85 @@ public final class DeckLayout {
             layout.pages.add(p);
         }
         return layout;
+    }
+
+    private static JSONArray argsToJson(List<Object> list) throws JSONException {
+        JSONArray args = new JSONArray();
+        for (Object v : list) {
+            JSONObject arg = new JSONObject();
+            if (v instanceof Integer) {
+                arg.put("t", "i");
+                arg.put("v", ((Integer) v).intValue());
+            } else if (v instanceof Float) {
+                arg.put("t", "f");
+                arg.put("v", (double) ((Float) v).floatValue());
+            } else {
+                arg.put("t", "s");
+                arg.put("v", String.valueOf(v));
+            }
+            args.put(arg);
+        }
+        return args;
+    }
+
+    private static List<Object> argsFromJson(JSONArray args) {
+        List<Object> out = new ArrayList<>();
+        if (args == null) {
+            return out;
+        }
+        for (int m = 0; m < args.length(); m++) {
+            JSONObject arg = args.optJSONObject(m);
+            if (arg == null) {
+                continue;
+            }
+            String t = str(arg, "t", "s");
+            if ("i".equals(t)) {
+                out.add(arg.optInt("v", 0));
+            } else if ("f".equals(t)) {
+                out.add((float) arg.optDouble("v", 0));
+            } else {
+                out.add(str(arg, "v", ""));
+            }
+        }
+        return out;
+    }
+
+    /** True when every action changes page (COLS, FX): drawn with a page-change icon. */
+    public static boolean isPageButton(Btn b) {
+        if (!KIND_ACTION.equals(b.kind) || b.actions.isEmpty()) {
+            return false;
+        }
+        for (Act a : b.actions) {
+            if (!Act.PAGE.equals(a.type) && !Act.PAGE_REL.equals(a.type)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** The first "/ColorKit/GlobalColors/N/Rgb" action with three values, or null. */
+    public static Act colourAction(Btn b) {
+        for (Act a : b.actions) {
+            if (Act.OSC.equals(a.type) && a.path.matches("^/ColorKit/GlobalColors/\\d+/Rgb$") && a.args.size() >= 3) {
+                return a;
+            }
+        }
+        return null;
+    }
+
+    /** Label for a fade button: SNAP, 0.5s, 1s, 2.5s... */
+    public static String fadeLabel(int ms) {
+        if (ms <= 0) {
+            return "SNAP";
+        }
+        if (ms % 1000 == 0) {
+            return (ms / 1000) + "s";
+        }
+        String s = String.format(Locale.US, "%.2f", ms / 1000.0);
+        while (s.endsWith("0")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        return s + "s";
     }
 
     /** optString that never returns the literal "null" for JSON nulls. */
