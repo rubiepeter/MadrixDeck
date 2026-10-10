@@ -13,7 +13,7 @@ even on a network with no internet.
     "Match button to output".
   - SNAP / 1s / 2s: set the crossfade time in seconds.
   - SPEED − / +: set the speed step. RESET: set the reset speed and target deck.
-  - Original restores the imported label, colour and RGB.
+  - Default restores the imported label, colour, RGB, fade time or speed setting.
 - Back gesture, or tap the top bar, opens the menu: Settings, Import Companion file,
   Reset all button edits, Restore built-in layout, Connection info, Exit.
 
@@ -41,6 +41,13 @@ port in Settings (default 80). Settings > Test HTTP shows MADRIX's raw replies.
 - The top bar shows OSC and HTTP separately.
 
 Speed is in MADRIX units: 1.0 = normal, 0 = paused, negative = reverse, limited to -10...10.
+
+### Live preview (CITP)
+
+In MADRIX: Preferences > Options > Devices Network > Capture - CITP > Enable Server.
+The selected place button then shows MADRIX's live Main Output (marked LIVE) instead of its
+stored thumbnail. Settings > Live preview turns it off; the CITP TCP port is found
+automatically (or can be set). Menu > Connection info shows a CITP log for troubleshooting.
 
 ### Feedback (optional)
 

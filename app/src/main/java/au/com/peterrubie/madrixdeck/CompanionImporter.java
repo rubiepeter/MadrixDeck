@@ -578,6 +578,7 @@ public final class CompanionImporter {
         b.origBg = bg;
         b.fg = 0xFFFFFF;
         b.fadeMs = fadeMs;
+        b.origFadeMs = DeckLayout.KIND_FADE.equals(kind) ? fadeMs : -1;
         if (DeckLayout.KIND_FADE.equals(kind)) {
             b.label = DeckLayout.fadeLabel(fadeMs);
         }

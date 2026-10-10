@@ -34,6 +34,7 @@ final class DeckButtonView extends View {
     private boolean empty;
     private boolean hidden;
     private int bgColor;
+    private boolean live;
 
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -82,6 +83,13 @@ final class DeckButtonView extends View {
 
     private static boolean eq(String a, String b) {
         return a == null ? b == null : a.equals(b);
+    }
+
+    void setLive(boolean live) {
+        if (live != this.live) {
+            this.live = live;
+            invalidate();
+        }
     }
 
     void flash() {
@@ -168,6 +176,9 @@ final class DeckButtonView extends View {
             // or the number large in the space above the name when there's no thumbnail.
             if (thumb != null) {
                 drawCornerNumber(canvas, corner);
+                if (live) {
+                    drawLiveTag(canvas);
+                }
             } else {
                 RectF upper = new RectF(rect.left, rect.top, rect.right, bandTop);
                 drawLabel(canvas, new String[]{corner}, upper, fgColor, 0.5f);
@@ -194,6 +205,21 @@ final class DeckButtonView extends View {
         int left = Math.round((bw - sw) / 2), top = Math.round((bh - sh) / 2);
         Rect src = new Rect(left, top, Math.round(left + sw), Math.round(top + sh));
         canvas.drawBitmap(bmp, src, dst, bitmapPaint);
+    }
+
+    /** Small red "LIVE" tag in the top-right corner. */
+    private void drawLiveTag(Canvas canvas) {
+        String tag = "LIVE";
+        textPaint.setTextSize(Math.min(rect.height() * 0.14f, 11 * density));
+        float tw = textPaint.measureText(tag);
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float th = fm.descent - fm.ascent;
+        float pad = 4 * density;
+        RectF pill = new RectF(rect.right - pad - tw - 2 * pad, rect.top + pad, rect.right - pad, rect.top + pad + th + pad * 0.5f);
+        fill.setColor(0xE0D32F2F);
+        canvas.drawRoundRect(pill, 5 * density, 5 * density, fill);
+        textPaint.setColor(0xFFFFFFFF);
+        canvas.drawText(tag, pill.centerX(), pill.top + pad * 0.25f - fm.ascent, textPaint);
     }
 
     private void drawCornerNumber(Canvas canvas, String number) {

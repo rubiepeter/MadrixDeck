@@ -25,7 +25,38 @@ public final class DeckLayout {
     public final List<Page> pages = new ArrayList<>();
     /** 1 = up to app 2.3 (coloured place buttons), 2 = grey places with dividers. */
     public int version = CURRENT_VERSION;
-    public static final int CURRENT_VERSION = 3;
+    public static final int CURRENT_VERSION = 4;
+
+    /**
+     * Friendlier names for the converted stroboLX layout: COLS/FX buttons become Colour/Places and the
+     * PLACE/COL pages become Places/Colour. Only exact matches of the old names are changed.
+     */
+    public static void applyFriendlyNames(DeckLayout l) {
+        for (Page p : l.pages) {
+            if ("PLACE".equals(p.name)) {
+                p.name = "Places";
+            } else if ("COL".equals(p.name)) {
+                p.name = "Colour";
+            }
+            for (Btn b : p.buttons) {
+                if (!isPageButton(b)) {
+                    continue;
+                }
+                if ("COLS".equals(b.origLabel)) {
+                    b.origLabel = "Colour";
+                }
+                if ("COLS".equals(b.label)) {
+                    b.label = "Colour";
+                }
+                if ("FX".equals(b.origLabel)) {
+                    b.origLabel = "Places";
+                }
+                if ("FX".equals(b.label)) {
+                    b.label = "Places";
+                }
+            }
+        }
+    }
 
     /** Custom label / button colour for a MADRIX place (0-based), whichever button shows it. */
     public static final class PlaceStyle {
@@ -74,6 +105,8 @@ public final class DeckLayout {
         public int fg = 0xFFFFFF;
         public String kind = KIND_ACTION;
         public int fadeMs = 0;
+        /** Fade time the button was created with, restored by Default. -1 = unknown (worked out on load). */
+        public int origFadeMs = -1;
         public final List<Act> actions = new ArrayList<>();
     }
 
@@ -87,7 +120,7 @@ public final class DeckLayout {
         public String type = OSC;
         public String path = "";
         public final List<Object> args = new ArrayList<>();
-        /** Arguments as imported, kept once the user edits args so "Original" can restore them. */
+        /** Arguments as imported, kept once the user edits args so "Default" can restore them. */
         public List<Object> origArgs;
         public int page;
         public int delta;
@@ -191,6 +224,9 @@ public final class DeckLayout {
                 ob.put("kind", b.kind);
                 if (b.fadeMs != 0) {
                     ob.put("fadeMs", b.fadeMs);
+                }
+                if (KIND_FADE.equals(b.kind) && b.origFadeMs >= 0) {
+                    ob.put("origFadeMs", b.origFadeMs);
                 }
                 JSONArray ja = new JSONArray();
                 for (Act a : b.actions) {
@@ -308,6 +344,7 @@ public final class DeckLayout {
                     b.fg = parseColor(str(ob, "fg", "#ffffff"), 0xFFFFFF);
                     b.kind = str(ob, "kind", KIND_ACTION);
                     b.fadeMs = ob.optInt("fadeMs", 0);
+                    b.origFadeMs = ob.optInt("origFadeMs", -1);
                     JSONArray ja = ob.optJSONArray("actions");
                     if (ja != null) {
                         for (int k = 0; k < ja.length(); k++) {
@@ -330,6 +367,16 @@ public final class DeckLayout {
                         }
                     }
                     p.buttons.add(b);
+                }
+            }
+            // Layouts from before origFadeMs: factory times were SNAP, 1s, 2s from left to right.
+            int fadeIndex = 0;
+            for (Btn b : p.buttons) {
+                if (KIND_FADE.equals(b.kind)) {
+                    if (b.origFadeMs < 0) {
+                        b.origFadeMs = fadeIndex * 1000;
+                    }
+                    fadeIndex++;
                 }
             }
             layout.pages.add(p);

@@ -1,8 +1,8 @@
 {
-  "version":3,
+  "version":4,
   "pages":[
     {
-      "name":"PLACE",
+      "name":"Places",
       "number":1,
       "cols":4,
       "rows":9,
@@ -751,8 +751,8 @@
         {
           "row":9,
           "col":4,
-          "label":"COLS",
-          "origLabel":"COLS",
+          "label":"Colour",
+          "origLabel":"Colour",
           "bg":"#990000",
           "origBg":"#990000",
           "fg":"#ffffff",
@@ -767,7 +767,7 @@
       ]
     },
     {
-      "name":"COL",
+      "name":"Colour",
       "number":2,
       "cols":4,
       "rows":8,
@@ -1506,6 +1506,7 @@
           "origBg":"#333333",
           "fg":"#ffffff",
           "kind":"fade",
+          "origFadeMs":0,
           "actions":[]
         },
         {
@@ -1518,6 +1519,7 @@
           "fg":"#ffffff",
           "kind":"fade",
           "fadeMs":1000,
+          "origFadeMs":1000,
           "actions":[]
         },
         {
@@ -1530,13 +1532,14 @@
           "fg":"#ffffff",
           "kind":"fade",
           "fadeMs":2000,
+          "origFadeMs":2000,
           "actions":[]
         },
         {
           "row":8,
           "col":4,
-          "label":"FX",
-          "origLabel":"FX",
+          "label":"Places",
+          "origLabel":"Places",
           "bg":"#990000",
           "origBg":"#990000",
           "fg":"#ffffff",

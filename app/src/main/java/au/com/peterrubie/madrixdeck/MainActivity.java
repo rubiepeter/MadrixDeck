@@ -75,6 +75,8 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
     private volatile boolean oscFeedback = true;
     private volatile boolean httpOkShown = true;
     private volatile List<Integer> visiblePlaces = new ArrayList<>();
+    private CitpClient citp;
+    private volatile Bitmap liveFrame;
 
     private LinearLayout grid;
     private TextView pageTitle;
@@ -108,6 +110,19 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             }
         }, MainActivity::decodeThumb, () -> visiblePlaces);
 
+        citp = new CitpClient(this, client, new CitpClient.Listener() {
+            @Override
+            public void onFrame(Bitmap frame) {
+                liveFrame = frame;
+                MainActivity.this.onStateChanged();
+            }
+
+            @Override
+            public void onCitpStatus() {
+                MainActivity.this.onStatusChanged();
+            }
+        });
+
         layout = loadLayout();
         applySettings();
         engine.restoreState(prefs.getString("state", null));
@@ -119,6 +134,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
 
         client.start();
         httpStatus.start();
+        citp.start();
     }
 
     /** Sends a message by HTTP when chosen in Settings and MADRIX has an HTTP equivalent, otherwise by OSC. */
@@ -187,6 +203,9 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         client.configure(host, prefs.getInt("port", DEFAULT_PORT), prefs.getInt("fbport", DEFAULT_FB_PORT));
         http.configure(host, prefs.getInt("httpport", DEFAULT_HTTP_PORT));
         httpStatus.enabled = prefs.getBoolean("httpstatus", true);
+        citp.host = host;
+        citp.manualPort = prefs.getInt("citpport", 0);
+        citp.enabled = prefs.getBoolean("live", true);
         updateVisiblePlaces();
         if (oldOffset != engine.placeOffset) {
             httpStatus.refresh();
@@ -221,8 +240,13 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                             CompanionImporter.stylePlaces(p);
                         }
                     }
-                    // From 2.4 and earlier: labels / colours typed on place buttons belong to the place.
-                    DeckLayout.movePlaceEditsToPlaces(l);
+                    if (l.version < 3) {
+                        // From 2.4 and earlier: labels / colours typed on place buttons belong to the place.
+                        DeckLayout.movePlaceEditsToPlaces(l);
+                    }
+                    if (l.version < 4) {
+                        DeckLayout.applyFriendlyNames(l);
+                    }
                     l.version = DeckLayout.CURRENT_VERSION;
                     layout = l;
                     saveLayout();
@@ -450,7 +474,15 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             Bitmap thumb = img instanceof Bitmap ? (Bitmap) img : null;
             boolean empty = useHttp && !hidden && Boolean.FALSE.equals(httpStatus.filled(place));
             String bottom = empty ? null : (autoLabel ? name : label);
-            v.update(autoLabel ? number : label, engine.isActive(b), number, bottom, empty ? null : thumb, empty, hidden, bg);
+            boolean active = engine.isActive(b);
+            boolean live = active && !hidden && citp.live() && liveFrame != null;
+            if (live) {
+                // The selected place shows MADRIX's live Main Output instead of its stored thumbnail.
+                thumb = liveFrame;
+                empty = false;
+            }
+            v.update(autoLabel ? number : label, active, number, bottom, empty ? null : thumb, empty, hidden, bg);
+            v.setLive(live);
         }
     }
 
@@ -559,8 +591,17 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 + "\nHTTP: " + http.url("...")
                 + "\nHTTP status: " + (httpStatus.enabled ? (httpStatus.ok() ? "OK" : "failing " + httpStatus.lastError()) : "off")
                 + "\n\nOSC feedback needs Enable Feedback in MADRIX: Preferences > Remote Control > OSC."
-                + "\nHTTP needs Remote HTTP on in MADRIX: Preferences > Remote Control > Remote HTTP.";
-        new AlertDialog.Builder(this).setTitle("Connection").setMessage(msg)
+                + "\nHTTP needs Remote HTTP on in MADRIX: Preferences > Remote Control > Remote HTTP."
+                + "\n\nLive preview (CITP): " + citp.summary()
+                + "\nCITP needs Enable Server in MADRIX: Preferences > Options > Devices Network > Capture - CITP."
+                + "\n\nCITP log:\n" + citp.logText();
+        TextView tv = new TextView(this);
+        tv.setText(msg);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(dp(20), dp(8), dp(20), dp(8));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        new AlertDialog.Builder(this).setTitle("Connection").setView(sv)
                 .setPositiveButton("OK", null).show();
     }
 
@@ -630,6 +671,14 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         test.setOnClickListener(v -> testHttp(host.getText().toString().trim(), parseInt(httpPort, DEFAULT_HTTP_PORT)));
         col.addView(test);
 
+        sectionLabel(col, "Live preview (CITP)");
+        CheckBox useLive = new CheckBox(this);
+        useLive.setText("Show MADRIX's live output on the selected place");
+        useLive.setChecked(citp.enabled);
+        col.addView(useLive);
+        EditText citpPort = addField(col, "CITP TCP port (0 = find automatically)",
+                String.valueOf(prefs.getInt("citpport", 0)), num);
+
         sectionLabel(col, "Places");
         final int[] firstPlace = {Math.max(1, prefs.getInt("firstplace", 1))};
         Button first = new Button(this);
@@ -676,6 +725,14 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                     ed.putBoolean("oscfb", useFb.isChecked());
                     ed.putInt("httpport", parseInt(httpPort, DEFAULT_HTTP_PORT));
                     ed.putBoolean("httpstatus", useHttpStatus.isChecked());
+                    ed.putBoolean("live", useLive.isChecked());
+                    int cp = 0;
+                    try {
+                        cp = Integer.parseInt(citpPort.getText().toString().trim());
+                    } catch (NumberFormatException ignored) {
+                        // keep 0 = automatic
+                    }
+                    ed.putInt("citpport", cp > 0 && cp < 65536 ? cp : 0);
                     ed.putInt("firstplace", firstPlace[0]);
                     ed.putString("stepv", String.valueOf(Math.max(0.001, Math.min(10, parseDouble(step, 0.1)))));
                     ed.putString("defspeed", String.valueOf(Math.max(-10, Math.min(10, parseDouble(def, 1.0)))));
@@ -1136,9 +1193,6 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                         if (b.label.equals(oldAuto)) {
                             b.label = DeckLayout.fadeLabel(newMs);
                         }
-                        if (b.origLabel.equals(oldAuto)) {
-                            b.origLabel = DeckLayout.fadeLabel(newMs);
-                        }
                         if (engine.fadeMs == oldMs) {
                             engine.fadeMs = newMs;
                             prefs.edit().putInt("fadems", newMs).apply();
@@ -1163,12 +1217,30 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                     saveLayout();
                     renderPage();
                 })
-                .setNeutralButton("Original", (d, w) -> {
+                .setNeutralButton("Default", (d, w) -> {
                     if (place != null) {
                         layout.placeStyles.remove(place);
                     }
                     b.label = b.origLabel;
                     b.bg = b.origBg;
+                    if (DeckLayout.KIND_FADE.equals(b.kind) && b.origFadeMs >= 0) {
+                        int oldMs = b.fadeMs;
+                        b.fadeMs = b.origFadeMs;
+                        b.label = DeckLayout.fadeLabel(b.origFadeMs);
+                        b.origLabel = b.label;
+                        if (engine.fadeMs == oldMs) {
+                            engine.fadeMs = b.fadeMs;
+                            prefs.edit().putInt("fadems", b.fadeMs).apply();
+                        }
+                    }
+                    if (DeckLayout.KIND_SPEED_DOWN.equals(b.kind) || DeckLayout.KIND_SPEED_UP.equals(b.kind)) {
+                        prefs.edit().putString("stepv", "0.1").apply();
+                        applySettings();
+                    }
+                    if (DeckLayout.KIND_SPEED_RESET.equals(b.kind)) {
+                        prefs.edit().putString("defspeed", "1.0").putString("target", "A").apply();
+                        applySettings();
+                    }
                     if (colourAct != null && colourAct.origArgs != null) {
                         colourAct.args.clear();
                         colourAct.args.addAll(colourAct.origArgs);
@@ -1343,6 +1415,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
     @Override
     protected void onDestroy() {
         httpStatus.stop();
+        citp.stop();
         client.stop();
         engine.shutdown();
         super.onDestroy();
