@@ -134,7 +134,11 @@ final class DeckButtonView extends View {
             canvas.save();
             canvas.clipPath(clip);
             if (thumb != null) {
-                drawCentreCrop(canvas, thumb, rect);
+                fill.setColor(0xFF000000);
+                canvas.drawRect(rect.left, rect.top, rect.right, rect.bottom, fill);
+                // Whole picture, fitted into the space above the name band.
+                RectF area = new RectF(rect.left, rect.top, rect.right, hasBottom ? bandTop : rect.bottom);
+                drawFit(canvas, thumb, area);
             }
             if (hasBottom) {
                 fill.setColor(0xB0000000);
@@ -193,6 +197,17 @@ final class DeckButtonView extends View {
             return;
         }
         drawLabel(canvas, text.split("\n"), rect, fgColor, 0.42f);
+    }
+
+    private void drawFit(Canvas canvas, Bitmap bmp, RectF area) {
+        float bw = bmp.getWidth(), bh = bmp.getHeight();
+        if (bw <= 0 || bh <= 0) {
+            return;
+        }
+        float scale = Math.min(area.width() / bw, area.height() / bh);
+        float w = bw * scale, h = bh * scale;
+        RectF dst = new RectF(area.centerX() - w / 2, area.centerY() - h / 2, area.centerX() + w / 2, area.centerY() + h / 2);
+        canvas.drawBitmap(bmp, new Rect(0, 0, (int) bw, (int) bh), dst, bitmapPaint);
     }
 
     private void drawCentreCrop(Canvas canvas, Bitmap bmp, RectF dst) {

@@ -28,6 +28,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -595,12 +596,30 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 + "\n\nLive preview (CITP): " + citp.summary()
                 + "\nCITP needs Enable Server in MADRIX: Preferences > Options > Devices Network > Capture - CITP."
                 + "\n\nCITP log:\n" + citp.logText();
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        Bitmap frame = citp.lastFrame();
+        if (frame != null) {
+            TextView cap = new TextView(this);
+            cap.setText("Latest live frame (" + frame.getWidth() + "x" + frame.getHeight() + "):");
+            cap.setPadding(dp(20), dp(8), dp(20), dp(4));
+            box.addView(cap);
+            ImageView img = new ImageView(this);
+            img.setImageBitmap(frame);
+            img.setScaleType(ImageView.ScaleType.FIT_CENTER);
+            img.setBackgroundColor(0xFF000000);
+            LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(90));
+            ip.leftMargin = dp(20);
+            ip.rightMargin = dp(20);
+            box.addView(img, ip);
+        }
         TextView tv = new TextView(this);
         tv.setText(msg);
         tv.setTextIsSelectable(true);
         tv.setPadding(dp(20), dp(8), dp(20), dp(8));
+        box.addView(tv);
         ScrollView sv = new ScrollView(this);
-        sv.addView(tv);
+        sv.addView(box);
         new AlertDialog.Builder(this).setTitle("Connection").setView(sv)
                 .setPositiveButton("OK", null).show();
     }

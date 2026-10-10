@@ -62,6 +62,12 @@ final class CitpClient {
     private volatile int frameCount;
     private volatile String frameInfo = "";
     private volatile boolean warnedFragments;
+    /** Shape of the chosen source from MADRIX's source list (0 = unknown). */
+    private volatile int sourceWidth;
+    private volatile int sourceHeight;
+    private volatile Bitmap lastFrame;
+    /** "240x71" -> {frames received, frames used, last brightness %}. */
+    private final java.util.Map<String, int[]> sizeStats = new java.util.LinkedHashMap<>();
 
     private volatile MulticastSocket udpSocket;
     private volatile Socket tcpSocket;
@@ -132,8 +138,23 @@ final class CitpClient {
             if (!frameInfo.isEmpty()) {
                 sb.append(" (").append(frameInfo).append(")");
             }
+            if (sourceWidth > 0) {
+                sb.append(", requesting ").append(sourceWidth).append("x").append(sourceHeight);
+            }
+            synchronized (sizeStats) {
+                for (java.util.Map.Entry<String, int[]> e : sizeStats.entrySet()) {
+                    int[] v = e.getValue();
+                    sb.append("\n   ").append(e.getKey()).append(": received ").append(v[0])
+                            .append(", used ").append(v[1]).append(", brightness ").append(v[2]).append("%");
+                }
+            }
         }
         return sb.toString();
+    }
+
+    /** Most recent frame that was used for the preview, for the Connection info screen. */
+    Bitmap lastFrame() {
+        return lastFrame;
     }
 
     String logText() {
@@ -234,10 +255,34 @@ final class CitpClient {
             if (f == null || (sourceId >= 0 && f.source != sourceId)) {
                 return;
             }
+            String key = f.format + " " + f.width + "x" + f.height;
+            int[] stat;
+            synchronized (sizeStats) {
+                stat = sizeStats.get(key);
+                if (stat == null) {
+                    stat = new int[]{0, 0, -1};
+                    sizeStats.put(key, stat);
+                    log("Frames arriving: " + key);
+                }
+                stat[0]++;
+            }
+            // Use only frames shaped like the source; MADRIX pads or stretches other requests.
+            if (sourceWidth > 0 && sourceHeight > 0 && f.width > 0 && f.height > 0) {
+                double want = (double) sourceWidth / sourceHeight;
+                double got = (double) f.width / f.height;
+                if (Math.abs(got - want) / want > 0.15) {
+                    return;
+                }
+            }
             Bitmap bmp = decode(f);
             if (bmp == null) {
                 return;
             }
+            stat[1]++;
+            if (stat[1] % 10 == 1) {
+                stat[2] = brightness(bmp);
+            }
+            lastFrame = bmp;
             frameCount++;
             if (lastFrameAt == 0 || frameCount == 1) {
                 log("First frame: " + f.format + " " + f.width + "x" + f.height + ", MSEX 1." + f.msexMinor);
@@ -246,6 +291,24 @@ final class CitpClient {
             lastFrameAt = System.currentTimeMillis();
             listener.onFrame(bmp);
         }
+    }
+
+    /** Average brightness 0-100 % from an 8 x 8 grid of pixels. */
+    private static int brightness(Bitmap b) {
+        int w = b.getWidth(), h = b.getHeight();
+        if (w <= 0 || h <= 0) {
+            return 0;
+        }
+        long sum = 0;
+        int n = 0;
+        for (int y = 0; y < 8; y++) {
+            for (int x = 0; x < 8; x++) {
+                int c = b.getPixel(Math.min(w - 1, x * w / 8 + w / 16), Math.min(h - 1, y * h / 8 + h / 16));
+                sum += (((c >> 16) & 0xFF) * 299 + ((c >> 8) & 0xFF) * 587 + (c & 0xFF) * 114) / 1000;
+                n++;
+            }
+        }
+        return (int) (sum * 100 / (255L * n));
     }
 
     private static Bitmap decode(Citp.Frame f) {
@@ -309,7 +372,9 @@ final class CitpClient {
                             }
                         }
                         if (src >= 0) {
-                            out.write(Citp.rqst(msexMinor, src, "JPEG", STREAM_SIZE, STREAM_SIZE, STREAM_FPS, STREAM_TIMEOUT_S));
+                            int w = sourceWidth > 0 ? sourceWidth : STREAM_SIZE;
+                            int h = sourceHeight > 0 ? sourceHeight : STREAM_SIZE;
+                            out.write(Citp.rqst(msexMinor, src, "JPEG", w, h, STREAM_FPS, STREAM_TIMEOUT_S));
                             out.flush();
                             lastRequest = now;
                         }
@@ -383,6 +448,8 @@ final class CitpClient {
                 log("Sources: " + (names.isEmpty() ? "none" : String.join(", ", names)));
                 if (pick != null) {
                     sourceId = pick.id;
+                    sourceWidth = pick.width;
+                    sourceHeight = pick.height;
                 }
                 break;
             }
