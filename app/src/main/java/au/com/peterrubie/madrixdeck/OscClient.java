@@ -201,6 +201,11 @@ final class OscClient implements Engine.Sender {
         }
     }
 
+    /** The Wi-Fi network MADRIX is on, or null while waiting for Wi-Fi. */
+    Network network() {
+        return wifi;
+    }
+
     boolean wifiUp() {
         return wifi != null && socket != null;
     }

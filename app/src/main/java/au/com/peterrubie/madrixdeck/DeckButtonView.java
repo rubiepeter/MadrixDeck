@@ -1,27 +1,45 @@
 package au.com.peterrubie.madrixdeck;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Path;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Typeface;
 import android.os.SystemClock;
 import android.view.HapticFeedbackConstants;
 import android.view.View;
 
-/** One deck button: rounded colour tile, auto-sized label, highlight when active, flash on press. */
+/**
+ * One deck button: rounded colour tile, auto-sized label, highlight when active, flash on press.
+ * Place buttons can also show a MADRIX thumbnail, the place number in a corner, the place name
+ * along the bottom, and a dimmed look when the place is empty.
+ */
 final class DeckButtonView extends View {
+
+    static final int EMPTY_GREY = 0x1c1c1c;
 
     final DeckLayout.Btn btn;
     private String text = "";
     private boolean active;
     private long flashUntil;
 
+    // Place-button extras (null / false for other buttons)
+    private String corner;
+    private String bottom;
+    private Bitmap thumb;
+    private boolean empty;
+    private boolean hidden;
+
     private final Paint fill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint border = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint textPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint bitmapPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
     private final RectF rect = new RectF();
+    private final Path clip = new Path();
     private final float density;
 
     DeckButtonView(Context ctx, DeckLayout.Btn btn) {
@@ -38,11 +56,27 @@ final class DeckButtonView extends View {
     }
 
     void update(String text, boolean active) {
-        if (!text.equals(this.text) || active != this.active) {
+        update(text, active, null, null, null, false, false);
+    }
+
+    void update(String text, boolean active, String corner, String bottom, Bitmap thumb, boolean empty, boolean hidden) {
+        boolean changed = !text.equals(this.text) || active != this.active || !eq(corner, this.corner)
+                || !eq(bottom, this.bottom) || thumb != this.thumb || empty != this.empty || hidden != this.hidden;
+        if (changed) {
             this.text = text;
             this.active = active;
+            this.corner = corner;
+            this.bottom = bottom;
+            this.thumb = thumb;
+            this.empty = empty;
+            this.hidden = hidden;
+            setEnabled(!hidden);
             invalidate();
         }
+    }
+
+    private static boolean eq(String a, String b) {
+        return a == null ? b == null : a.equals(b);
     }
 
     void flash() {
@@ -67,19 +101,39 @@ final class DeckButtonView extends View {
 
     @Override
     protected void onDraw(Canvas canvas) {
+        if (hidden) {
+            return;
+        }
         float w = getWidth(), h = getHeight();
         float inset = 3 * density;
         float radius = 10 * density;
         rect.set(inset, inset, w - inset, h - inset);
 
-        int bg = btn.bg & 0xFFFFFF;
-        fill.setColor(active ? lighten(bg, 0.22f) : Color.rgb((bg >> 16) & 0xFF, (bg >> 8) & 0xFF, bg & 0xFF));
+        int bg = (empty ? EMPTY_GREY : btn.bg) & 0xFFFFFF;
+        fill.setColor(active && thumb == null ? lighten(bg, 0.22f) : Color.rgb((bg >> 16) & 0xFF, (bg >> 8) & 0xFF, bg & 0xFF));
         canvas.drawRoundRect(rect, radius, radius, fill);
+
+        boolean hasBottom = bottom != null && !bottom.isEmpty();
+        float bandTop = rect.bottom - rect.height() * 0.3f;
+        if (thumb != null || hasBottom) {
+            clip.reset();
+            clip.addRoundRect(rect, radius, radius, Path.Direction.CW);
+            canvas.save();
+            canvas.clipPath(clip);
+            if (thumb != null) {
+                drawCentreCrop(canvas, thumb, rect);
+            }
+            if (hasBottom) {
+                fill.setColor(0xB0000000);
+                canvas.drawRect(rect.left, bandTop, rect.right, rect.bottom, fill);
+            }
+            canvas.restore();
+        }
 
         if (active) {
             float bw = 4 * density;
             border.setStrokeWidth(bw);
-            border.setColor(isLight(bg) ? Color.BLACK : Color.WHITE);
+            border.setColor(thumb == null && isLight(bg) ? Color.BLACK : Color.WHITE);
             RectF r2 = new RectF(rect.left + bw / 2, rect.top + bw / 2, rect.right - bw / 2, rect.bottom - bw / 2);
             canvas.drawRoundRect(r2, radius, radius, border);
         }
@@ -90,6 +144,9 @@ final class DeckButtonView extends View {
         }
 
         int fgColor = Color.rgb((btn.fg >> 16) & 0xFF, (btn.fg >> 8) & 0xFF, btn.fg & 0xFF);
+        if (empty) {
+            fgColor = 0x66FFFFFF;
+        }
         if (DeckLayout.isPageButton(btn)) {
             float iconH = rect.height() * (text.isEmpty() ? 0.5f : 0.36f);
             float cy = text.isEmpty() ? rect.centerY() : rect.top + rect.height() * 0.38f;
@@ -100,10 +157,71 @@ final class DeckButtonView extends View {
             }
             return;
         }
+
+        if (corner != null && (thumb != null || hasBottom)) {
+            // Place with thumbnail and/or name: number in the corner, name along the bottom,
+            // or the number large in the space above the name when there's no thumbnail.
+            if (thumb != null) {
+                drawCornerNumber(canvas, corner);
+            } else {
+                RectF upper = new RectF(rect.left, rect.top, rect.right, bandTop);
+                drawLabel(canvas, new String[]{corner}, upper, fgColor, 0.5f);
+            }
+            if (hasBottom) {
+                RectF band = new RectF(rect.left + 4 * density, bandTop, rect.right - 4 * density, rect.bottom);
+                drawSingleLine(canvas, bottom, band, 0xFFFFFFFF);
+            }
+            return;
+        }
         if (text.isEmpty()) {
             return;
         }
         drawLabel(canvas, text.split("\n"), rect, fgColor, 0.42f);
+    }
+
+    private void drawCentreCrop(Canvas canvas, Bitmap bmp, RectF dst) {
+        float bw = bmp.getWidth(), bh = bmp.getHeight();
+        if (bw <= 0 || bh <= 0) {
+            return;
+        }
+        float scale = Math.max(dst.width() / bw, dst.height() / bh);
+        float sw = dst.width() / scale, sh = dst.height() / scale;
+        int left = Math.round((bw - sw) / 2), top = Math.round((bh - sh) / 2);
+        Rect src = new Rect(left, top, Math.round(left + sw), Math.round(top + sh));
+        canvas.drawBitmap(bmp, src, dst, bitmapPaint);
+    }
+
+    private void drawCornerNumber(Canvas canvas, String number) {
+        textPaint.setTextSize(Math.min(rect.height() * 0.22f, 18 * density));
+        float tw = textPaint.measureText(number);
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float th = fm.descent - fm.ascent;
+        float pad = 4 * density;
+        RectF pill = new RectF(rect.left + pad, rect.top + pad, rect.left + pad + tw + 2 * pad, rect.top + pad + th + pad * 0.6f);
+        fill.setColor(0xB0000000);
+        canvas.drawRoundRect(pill, 6 * density, 6 * density, fill);
+        textPaint.setColor(0xFFFFFFFF);
+        canvas.drawText(number, pill.centerX(), pill.top + pad * 0.3f - fm.ascent, textPaint);
+    }
+
+    /** One line, shrunk to fit and cut with an ellipsis if it is still too long. */
+    private void drawSingleLine(Canvas canvas, String s, RectF area, int color) {
+        float size = Math.min(area.height() * 0.62f, 16 * density);
+        textPaint.setTextSize(size);
+        float maxW = area.width();
+        float tw = textPaint.measureText(s);
+        if (tw > maxW) {
+            size = Math.max(9 * density, size * maxW / tw);
+            textPaint.setTextSize(size);
+        }
+        String out = s;
+        while (out.length() > 1 && textPaint.measureText(out) > maxW) {
+            out = out.substring(0, out.length() - 2) + "…";
+        }
+        textPaint.setColor(color);
+        Paint.FontMetrics fm = textPaint.getFontMetrics();
+        float y = area.centerY() - (fm.descent + fm.ascent) / 2;
+        canvas.drawText(out, area.centerX(), y, textPaint);
     }
 
     /** Two stacked pages with an arrow: "go to another page". */

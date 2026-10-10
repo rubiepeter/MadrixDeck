@@ -468,6 +468,10 @@ public final class CompanionImporter {
             }
         }
 
+        if (hasPlaces) {
+            stylePlaces(page);
+        }
+
         if (hasPlaces && !hasSpeed && page.cols >= 3) {
             int row = lastRow(page) + 1;
             page.buttons.add(special(row, 1, DeckLayout.KIND_SPEED_DOWN, 0x2b3a4a, 0));
@@ -518,6 +522,43 @@ public final class CompanionImporter {
             }
         }
         page.buttons.sort((a, b) -> a.row != b.row ? a.row - b.row : a.col - b.col);
+    }
+
+    /**
+     * Neutral grey place buttons, with a divider wherever they used to change colour between
+     * rows (e.g. 16 orange then 16 blue). Also used once to upgrade layouts saved by older versions.
+     */
+    public static void stylePlaces(DeckLayout.Page page) {
+        if (!page.dividers.isEmpty()) {
+            return;
+        }
+        Integer prevColour = null;
+        int prevRow = -1;
+        for (DeckLayout.Btn b : page.buttons) {
+            if (!isPlace(b) || b.row == prevRow) {
+                continue;
+            }
+            if (prevColour != null && b.bg != prevColour) {
+                page.dividers.add(b.row);
+            }
+            prevColour = b.bg;
+            prevRow = b.row;
+        }
+        for (DeckLayout.Btn b : page.buttons) {
+            if (isPlace(b)) {
+                b.bg = DeckLayout.PLACE_GREY;
+                b.origBg = DeckLayout.PLACE_GREY;
+            }
+        }
+    }
+
+    private static boolean isPlace(DeckLayout.Btn b) {
+        for (DeckLayout.Act a : b.actions) {
+            if (DeckLayout.Act.OSC.equals(a.type) && PLACE.matcher(a.path).matches()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static int lastRow(DeckLayout.Page page) {

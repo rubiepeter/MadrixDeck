@@ -8,6 +8,7 @@
     <application
         android:label="MADRIX Deck"
         android:icon="@android:drawable/ic_media_play"
+        android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
 
         <activity

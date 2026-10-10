@@ -19,16 +19,16 @@ public final class Describe {
         switch (b.kind) {
             case DeckLayout.KIND_SPEED_DOWN:
                 sb.append("Slows ").append(engine.speedTargetName()).append(" by ").append(engine.stepText())
-                        .append(" of normal speed.\nStep size and target deck are in Settings.");
+                        .append(" (1.0 = normal speed, 0 = paused, negative = reverse).");
                 break;
             case DeckLayout.KIND_SPEED_UP:
                 sb.append("Speeds up ").append(engine.speedTargetName()).append(" by ").append(engine.stepText())
-                        .append(" of normal speed.\nStep size and target deck are in Settings.");
+                        .append(" (1.0 = normal speed, up to 10).");
                 break;
             case DeckLayout.KIND_SPEED_RESET:
                 sb.append("Resets ").append(engine.speedTargetName()).append(" to the default speed (")
                         .append(OscMessage.trimFloat((float) engine.defaultSpeed)).append(").\nCurrently ")
-                        .append(engine.speedText()).append(". Default speed is in Settings.");
+                        .append(engine.speedText()).append(".");
                 break;
             case DeckLayout.KIND_FADE:
                 sb.append(b.fadeMs == 0 ? "Colour and place changes snap instantly." :
@@ -45,7 +45,7 @@ public final class Describe {
                     if (sb.length() > 0) {
                         sb.append('\n');
                     }
-                    sb.append("• ").append(action(a, layout));
+                    sb.append("• ").append(action(a, layout, engine.placeOffset));
                 }
                 break;
         }
@@ -55,6 +55,10 @@ public final class Describe {
 
     /** Short name for the editor title, e.g. "Place 29", "Colour A", "Go to COL", "Speed +". */
     public static String shortName(DeckLayout.Btn b, DeckLayout layout) {
+        return shortName(b, layout, 0);
+    }
+
+    public static String shortName(DeckLayout.Btn b, DeckLayout layout, int placeOffset) {
         switch (b.kind) {
             case DeckLayout.KIND_SPEED_DOWN: return "Speed −";
             case DeckLayout.KIND_SPEED_UP: return "Speed +";
@@ -76,7 +80,7 @@ public final class Describe {
             Integer v = a.args.isEmpty() || !(a.args.get(0) instanceof Number) ? null : ((Number) a.args.get(0)).intValue();
             Matcher m = PLACE.matcher(a.path);
             if (m.matches() && v != null) {
-                return "Place " + (v + 1);
+                return "Place " + (v + placeOffset + 1);
             }
             m = COLOUR.matcher(a.path);
             if (m.matches()) {
@@ -89,6 +93,10 @@ public final class Describe {
     }
 
     public static String action(DeckLayout.Act a, DeckLayout layout) {
+        return action(a, layout, 0);
+    }
+
+    public static String action(DeckLayout.Act a, DeckLayout layout, int placeOffset) {
         switch (a.type) {
             case DeckLayout.Act.WAIT:
                 return "Wait " + a.ms + " ms";
@@ -107,7 +115,12 @@ public final class Describe {
         Integer v = a.args.isEmpty() || !(a.args.get(0) instanceof Number) ? null : ((Number) a.args.get(0)).intValue();
         Matcher m = PLACE.matcher(a.path);
         if (m.matches() && v != null) {
-            return "Deck " + m.group(1) + ", Place " + (v + 1) + " (sends index " + v + ")\n   Uses the current crossfade setting\n   OSC " + raw;
+            int place = v + placeOffset;
+            String osc = new OscMessage(a.path, java.util.Collections.singletonList(place)).toString();
+            return "Deck " + m.group(1) + ", Place " + (place + 1) + " (sends index " + place + ")"
+                    + (placeOffset != 0 ? "\n   Button " + (v + 1) + ", shifted by the First place setting" : "")
+                    + "\n   Uses the current crossfade setting\n   OSC " + osc
+                    + "\n   HTTP SetStorageDeck" + m.group(1) + "=P" + (place + 1);
         }
         m = STORAGE.matcher(a.path);
         if (m.matches() && v != null) {

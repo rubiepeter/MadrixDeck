@@ -5,6 +5,8 @@ import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -23,6 +25,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
@@ -54,6 +57,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
     private static final String DEFAULT_HOST = "10.0.10.199";
     private static final int DEFAULT_PORT = 9001;
     private static final int DEFAULT_FB_PORT = 9002;
+    private static final int DEFAULT_HTTP_PORT = 80;
 
     private static final int[] SWATCHES = {
             0xcc6500, 0x000099, 0x990000, 0xff0000, 0xff8000, 0xcccc00, 0x00ff00, 0x00ffa6,
@@ -65,6 +69,12 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
     private int pageIndex;
     private Engine engine;
     private OscClient client;
+    private HttpLink http;
+    private HttpStatus httpStatus;
+    private volatile boolean sendViaHttp;
+    private volatile boolean oscFeedback = true;
+    private volatile boolean httpOkShown = true;
+    private volatile List<Integer> visiblePlaces = new ArrayList<>();
 
     private LinearLayout grid;
     private TextView pageTitle;
@@ -79,29 +89,108 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
 
         client = new OscClient(this, this);
-        engine = new Engine(client, this);
-        client.setIncoming(engine::onIncoming);
+        http = new HttpLink(client);
+        engine = new Engine(this::route, this);
+        client.setIncoming(m -> {
+            if (oscFeedback) {
+                engine.onIncoming(m);
+            }
+        });
+        httpStatus = new HttpStatus(http, new HttpStatus.Listener() {
+            @Override
+            public void onDeckState(Integer storage, Integer place) {
+                engine.applyExternal(Engine.DECK_A, storage, place);
+            }
+
+            @Override
+            public void onStatusChanged() {
+                MainActivity.this.onStateChanged();
+            }
+        }, MainActivity::decodeThumb, () -> visiblePlaces);
+
+        layout = loadLayout();
         applySettings();
         engine.restoreState(prefs.getString("state", null));
 
         buildUi();
-        layout = loadLayout();
         pageIndex = Math.max(0, Math.min(prefs.getInt("page", 0), layout.pages.size() - 1));
         renderPage();
         hideSystemBars();
 
         client.start();
+        httpStatus.start();
+    }
+
+    /** Sends a message by HTTP when chosen in Settings and MADRIX has an HTTP equivalent, otherwise by OSC. */
+    private boolean route(OscMessage m) {
+        if (sendViaHttp) {
+            String cmd = HttpCommands.fromOsc(m);
+            if (cmd != null) {
+                boolean ok = http.send(cmd);
+                if (ok != httpOkShown) {
+                    httpOkShown = ok;
+                    onStatusChanged();
+                }
+                return ok;
+            }
+        }
+        return client.send(m);
+    }
+
+    /** Thumbnail bytes to a small Bitmap (at most about 320 px across). */
+    private static Object decodeThumb(byte[] data) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeByteArray(data, 0, data.length, bounds);
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) {
+            return null;
+        }
+        int sample = 1;
+        while (Math.max(bounds.outWidth, bounds.outHeight) / (sample * 2) >= 320) {
+            sample *= 2;
+        }
+        BitmapFactory.Options opts = new BitmapFactory.Options();
+        opts.inSampleSize = sample;
+        return BitmapFactory.decodeByteArray(data, 0, data.length, opts);
+    }
+
+    /** 0-based MADRIX places on all place buttons, for HTTP to read names, thumbnails and empty/filled. */
+    private void updateVisiblePlaces() {
+        if (layout == null) {
+            return;
+        }
+        List<Integer> list = new ArrayList<>();
+        for (DeckLayout.Page p : layout.pages) {
+            for (DeckLayout.Btn b : p.buttons) {
+                Integer place = engine.placeOf(b);
+                if (place != null && place >= 0 && place < Engine.PLACE_COUNT && !list.contains(place)) {
+                    list.add(place);
+                }
+            }
+        }
+        java.util.Collections.sort(list);
+        visiblePlaces = list;
     }
 
     // ---------- settings ----------
 
     private void applySettings() {
-        engine.stepPercent = prefDouble("step", 10);
+        engine.speedStep = prefDouble("stepv", 0.1);
         engine.defaultSpeed = prefDouble("defspeed", 1.0);
         engine.speedTarget = prefs.getString("target", "A");
         engine.fadeMs = prefs.getInt("fadems", 0);
-        client.configure(prefs.getString("host", DEFAULT_HOST), prefs.getInt("port", DEFAULT_PORT),
-                prefs.getInt("fbport", DEFAULT_FB_PORT));
+        int oldOffset = engine.placeOffset;
+        engine.placeOffset = Math.max(0, prefs.getInt("firstplace", 1) - 1);
+        sendViaHttp = "http".equals(prefs.getString("send", "osc"));
+        oscFeedback = prefs.getBoolean("oscfb", true);
+        String host = prefs.getString("host", DEFAULT_HOST);
+        client.configure(host, prefs.getInt("port", DEFAULT_PORT), prefs.getInt("fbport", DEFAULT_FB_PORT));
+        http.configure(host, prefs.getInt("httpport", DEFAULT_HTTP_PORT));
+        httpStatus.enabled = prefs.getBoolean("httpstatus", true);
+        updateVisiblePlaces();
+        if (oldOffset != engine.placeOffset) {
+            httpStatus.refresh();
+        }
     }
 
     private double prefDouble(String key, double fallback) {
@@ -125,6 +214,15 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             }
             DeckLayout l = DeckLayout.fromJson(new JSONObject(json));
             if (!l.pages.isEmpty()) {
+                if (l.version < 2) {
+                    // One-time upgrade from 2.3 and earlier: grey place buttons with a divider.
+                    for (DeckLayout.Page p : l.pages) {
+                        CompanionImporter.stylePlaces(p);
+                    }
+                    l.version = DeckLayout.CURRENT_VERSION;
+                    layout = l;
+                    saveLayout();
+                }
                 return l;
             }
         } catch (Exception e) {
@@ -273,6 +371,16 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 grid.addView(h, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT));
             }
+            if (page.dividers.contains(r)) {
+                View line = new View(this);
+                line.setBackgroundColor(0xFF5A5A5A);
+                LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(2));
+                lp.topMargin = dp(4);
+                lp.bottomMargin = dp(4);
+                lp.leftMargin = dp(10);
+                lp.rightMargin = dp(10);
+                grid.addView(line, lp);
+            }
             if (page.rowEmpty(r)) {
                 continue;
             }
@@ -300,6 +408,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             }
             grid.addView(row, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
         }
+        updateVisiblePlaces();
         refreshButtons();
         updateStatus();
     }
@@ -318,8 +427,25 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
     }
 
     private void refreshButtons() {
+        boolean useHttp = httpStatus.enabled;
         for (DeckButtonView v : views) {
-            v.update(labelFor(v.btn), engine.isActive(v.btn));
+            DeckLayout.Btn b = v.btn;
+            Integer place = engine.placeOf(b);
+            if (place == null) {
+                v.update(labelFor(b), engine.isActive(b));
+                continue;
+            }
+            boolean hidden = place < 0 || place >= Engine.PLACE_COUNT;
+            Integer base = Engine.basePlaceOf(b);
+            String label = b.label == null ? "" : b.label.trim();
+            boolean autoLabel = label.isEmpty() || label.equals(String.valueOf(base + 1));
+            String number = String.valueOf(place + 1);
+            String name = useHttp && !hidden ? httpStatus.name(place) : null;
+            Object img = useHttp && !hidden ? httpStatus.thumb(place) : null;
+            Bitmap thumb = img instanceof Bitmap ? (Bitmap) img : null;
+            boolean empty = useHttp && !hidden && Boolean.FALSE.equals(httpStatus.filled(place));
+            String bottom = empty ? null : (autoLabel ? name : label);
+            v.update(autoLabel ? number : label, engine.isActive(b), number, bottom, empty ? null : thumb, empty, hidden);
         }
     }
 
@@ -328,14 +454,18 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
             return;
         }
         boolean up = client.wifiUp();
-        boolean ok = up && client.lastSendOk();
-        String text = "MADRIX " + client.host() + "  " + (up ? "Wi-Fi ✓" : "Wi-Fi ✗")
-                + (engine.feedbackSeen() ? "  FB ✓" : "");
-        if (up && !client.lastSendOk() && !client.lastError().isEmpty()) {
-            text += "  send error";
-        }
+        boolean oscOk = up && client.lastSendOk();
+        boolean showHttp = sendViaHttp || httpStatus.enabled;
+        boolean httpOk = httpStatus.enabled ? httpStatus.ok() : http.lastOk();
+        String text = client.host() + "  " + (up ? "" : "Wi-Fi \u2717  ") + "OSC " + (oscOk ? "\u2713" : "\u2717")
+                + (showHttp ? "  HTTP " + (httpOk ? "\u2713" : "\u2717") : "")
+                + (oscFeedback && engine.feedbackSeen() ? "  FB \u2713" : "");
         status.setText(text);
-        status.setTextColor(ok ? 0xFF7CD992 : 0xFFFFA040);
+        boolean good = sendViaHttp ? httpOk : oscOk;
+        if (httpStatus.enabled && !httpOk) {
+            good = false;
+        }
+        status.setTextColor(good ? 0xFF7CD992 : 0xFFFFA040);
     }
 
     // ---------- Engine / client callbacks (any thread) ----------
@@ -419,8 +549,12 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 + "\nLast send: " + (client.lastSendOk() ? "OK" : "failed " + client.lastError())
                 + "\nFeedback port " + prefs.getInt("fbport", DEFAULT_FB_PORT) + ": "
                 + (client.feedbackOnPort() ? "listening" : "port busy, listening on reply port only")
-                + "\nFeedback received: " + (engine.feedbackSeen() ? "yes" : "not yet")
-                + "\n\nFor feedback, tick Enable Feedback in MADRIX: Preferences > Remote Control > OSC.";
+                + "\nOSC feedback: " + (oscFeedback ? (engine.feedbackSeen() ? "received" : "on, nothing received yet") : "off")
+                + "\n\nPresses sent by: " + (sendViaHttp ? "HTTP (OSC for anything without an HTTP command)" : "OSC")
+                + "\nHTTP: " + http.url("...")
+                + "\nHTTP status: " + (httpStatus.enabled ? (httpStatus.ok() ? "OK" : "failing " + httpStatus.lastError()) : "off")
+                + "\n\nOSC feedback needs Enable Feedback in MADRIX: Preferences > Remote Control > OSC."
+                + "\nHTTP needs Remote HTTP on in MADRIX: Preferences > Remote Control > Remote HTTP.";
         new AlertDialog.Builder(this).setTitle("Connection").setMessage(msg)
                 .setPositiveButton("OK", null).show();
     }
@@ -449,34 +583,76 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         LinearLayout col = formColumn();
         int num = InputType.TYPE_CLASS_NUMBER;
         int dec = InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL;
+
+        sectionLabel(col, "MADRIX");
         EditText host = addField(col, "MADRIX IP address", prefs.getString("host", DEFAULT_HOST),
                 InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+
+        sectionLabel(col, "Send presses with");
+        RadioGroup sendRg = new RadioGroup(this);
+        RadioButton viaOsc = new RadioButton(this);
+        viaOsc.setText("OSC");
+        viaOsc.setId(View.generateViewId());
+        RadioButton viaHttp = new RadioButton(this);
+        viaHttp.setText("HTTP (anything without an HTTP command still goes by OSC)");
+        viaHttp.setId(View.generateViewId());
+        sendRg.addView(viaOsc);
+        sendRg.addView(viaHttp);
+        if (sendViaHttp) {
+            viaHttp.setChecked(true);
+        } else {
+            viaOsc.setChecked(true);
+        }
+        col.addView(sendRg);
+
+        sectionLabel(col, "OSC");
         EditText port = addField(col, "MADRIX OSC port", String.valueOf(prefs.getInt("port", DEFAULT_PORT)), num);
         EditText fb = addField(col, "Feedback port (MADRIX Destination Network Port)",
                 String.valueOf(prefs.getInt("fbport", DEFAULT_FB_PORT)), num);
-        EditText step = addField(col, "Speed step (% of normal speed)", prefs.getString("step", "10"), dec);
-        EditText def = addField(col, "Reset speed (1.0 = normal)", prefs.getString("defspeed", "1.0"),
-                dec | InputType.TYPE_NUMBER_FLAG_SIGNED);
+        CheckBox useFb = new CheckBox(this);
+        useFb.setText("Use OSC feedback");
+        useFb.setChecked(oscFeedback);
+        col.addView(useFb);
 
+        sectionLabel(col, "HTTP (MADRIX Remote HTTP)");
+        EditText httpPort = addField(col, "HTTP port", String.valueOf(prefs.getInt("httpport", DEFAULT_HTTP_PORT)), num);
+        CheckBox useHttpStatus = new CheckBox(this);
+        useHttpStatus.setText("Read status by HTTP: current place, empty places, names, thumbnails");
+        useHttpStatus.setChecked(httpStatus.enabled);
+        col.addView(useHttpStatus);
+        Button test = new Button(this);
+        test.setText("Test HTTP");
+        test.setOnClickListener(v -> testHttp(host.getText().toString().trim(), parseInt(httpPort, DEFAULT_HTTP_PORT)));
+        col.addView(test);
+
+        sectionLabel(col, "Places");
+        final int[] firstPlace = {Math.max(1, prefs.getInt("firstplace", 1))};
+        Button first = new Button(this);
+        first.setText(firstPlaceText(firstPlace[0]));
+        first.setOnClickListener(v -> {
+            String[] items = new String[16];
+            for (int i = 0; i < 16; i++) {
+                items[i] = firstPlaceText(1 + 16 * i);
+            }
+            new AlertDialog.Builder(this)
+                    .setTitle("First place")
+                    .setItems(items, (d, which) -> {
+                        firstPlace[0] = 1 + 16 * which;
+                        first.setText(firstPlaceText(firstPlace[0]));
+                    })
+                    .show();
+        });
+        col.addView(first);
+
+        sectionLabel(col, "Speed");
+        EditText step = addField(col, "Speed step (1.0 = normal speed)", trimNumber(engine.speedStep), dec);
+        EditText def = addField(col, "Reset speed (1.0 = normal, 0 = paused)", trimNumber(engine.defaultSpeed),
+                dec | InputType.TYPE_NUMBER_FLAG_SIGNED);
         TextView tl = new TextView(this);
         tl.setText("Speed buttons control");
         tl.setPadding(0, dp(12), 0, 0);
         col.addView(tl);
-        RadioGroup rg = new RadioGroup(this);
-        String[] codes = {"A", "B", "AB"};
-        String[] names = {"Deck A", "Deck B", "Both decks"};
-        String cur = prefs.getString("target", "A");
-        for (int i = 0; i < codes.length; i++) {
-            RadioButton rb = new RadioButton(this);
-            rb.setText(names[i]);
-            rb.setId(View.generateViewId());
-            rb.setTag(codes[i]);
-            rg.addView(rb);
-            if (codes[i].equals(cur)) {
-                rb.setChecked(true);
-            }
-        }
-        col.addView(rg);
+        RadioGroup rg = targetGroup(col);
 
         ScrollView sv = new ScrollView(this);
         sv.addView(col);
@@ -489,10 +665,15 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                     if (!h.isEmpty()) {
                         ed.putString("host", h);
                     }
+                    ed.putString("send", viaHttp.isChecked() ? "http" : "osc");
                     ed.putInt("port", parseInt(port, DEFAULT_PORT));
                     ed.putInt("fbport", parseInt(fb, DEFAULT_FB_PORT));
-                    ed.putString("step", String.valueOf(Math.max(0.1, parseDouble(step, 10))));
-                    ed.putString("defspeed", String.valueOf(Math.max(-20, Math.min(20, parseDouble(def, 1.0)))));
+                    ed.putBoolean("oscfb", useFb.isChecked());
+                    ed.putInt("httpport", parseInt(httpPort, DEFAULT_HTTP_PORT));
+                    ed.putBoolean("httpstatus", useHttpStatus.isChecked());
+                    ed.putInt("firstplace", firstPlace[0]);
+                    ed.putString("stepv", String.valueOf(Math.max(0.001, Math.min(10, parseDouble(step, 0.1)))));
+                    ed.putString("defspeed", String.valueOf(Math.max(-10, Math.min(10, parseDouble(def, 1.0)))));
                     View checked = rg.findViewById(rg.getCheckedRadioButtonId());
                     if (checked != null) {
                         ed.putString("target", String.valueOf(checked.getTag()));
@@ -504,6 +685,70 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                 })
                 .setNegativeButton("Cancel", null)
                 .show();
+    }
+
+    private static String firstPlaceText(int first) {
+        int last = Math.min(Engine.PLACE_COUNT, first + 31);
+        return "Places " + first + " to " + last;
+    }
+
+    /** Tries the HTTP commands the app relies on and shows MADRIX's raw replies. */
+    private void testHttp(String host, int port) {
+        HttpLink link = new HttpLink(client);
+        link.configure(host.isEmpty() ? prefs.getString("host", DEFAULT_HOST) : host, port);
+        Toast.makeText(this, "Testing " + link.url("..."), Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            StringBuilder sb = new StringBuilder();
+            sb.append(link.url("<command>")).append("\n\n");
+            Integer storage = null;
+            Integer place = null;
+            String[] cmds = {HttpCommands.getStorageDeck("A"), HttpCommands.getPlaceDeck("A")};
+            for (String c : cmds) {
+                String reply = tryText(link, c, sb);
+                if (c.startsWith("GetStorageDeck")) {
+                    storage = HttpCommands.parseStorage(reply);
+                } else {
+                    place = HttpCommands.parsePlace(reply);
+                }
+            }
+            int s = storage == null ? 1 : storage;
+            int p = place == null ? 1 : place;
+            tryText(link, HttpCommands.fullStateStorage(s), sb);
+            tryText(link, HttpCommands.fullState(s, p), sb);
+            tryText(link, HttpCommands.description(s, p), sb);
+            String thumbCmd = HttpCommands.thumbnail(s, p);
+            try {
+                byte[] img = link.bytes(thumbCmd);
+                Object bmp = decodeThumb(img);
+                sb.append(thumbCmd).append("\n  ").append(img.length).append(" bytes, ")
+                        .append(bmp != null ? "a valid image" : "not an image").append("\n\n");
+            } catch (Exception e) {
+                sb.append(thumbCmd).append("\n  FAILED: ").append(e.getMessage()).append("\n\n");
+            }
+            sb.append("Read as: storage ").append(storage).append(", place ").append(place);
+            runOnUiThread(() -> {
+                TextView tv = new TextView(this);
+                tv.setText(sb.toString());
+                tv.setTextIsSelectable(true);
+                tv.setPadding(dp(20), dp(8), dp(20), dp(8));
+                ScrollView sv = new ScrollView(this);
+                sv.addView(tv);
+                new AlertDialog.Builder(this).setTitle("HTTP test").setView(sv)
+                        .setPositiveButton("OK", null).show();
+            });
+        }, "http-test").start();
+    }
+
+    private static String tryText(HttpLink link, String cmd, StringBuilder sb) {
+        try {
+            String reply = link.text(cmd);
+            String shown = reply.length() > 300 ? reply.substring(0, 300) + "…" : reply;
+            sb.append(cmd).append("\n  \"").append(shown).append("\"\n\n");
+            return reply;
+        } catch (Exception e) {
+            sb.append(cmd).append("\n  FAILED: ").append(e.getMessage()).append("\n\n");
+            return null;
+        }
     }
 
     private static int parseInt(EditText e, int fallback) {
@@ -714,11 +959,11 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         EditText resetField = null;
         RadioGroup targetRg = null;
         if (DeckLayout.KIND_SPEED_DOWN.equals(b.kind) || DeckLayout.KIND_SPEED_UP.equals(b.kind)) {
-            sectionLabel(col, "Speed step (% of normal speed, used by both speed buttons)");
+            sectionLabel(col, "Speed step (1.0 = normal speed, used by both speed buttons)");
             stepField = new EditText(this);
             stepField.setInputType(dec);
             stepField.setSingleLine(true);
-            stepField.setText(trimNumber(engine.stepPercent));
+            stepField.setText(trimNumber(engine.speedStep));
             col.addView(stepField);
         }
         if (DeckLayout.KIND_SPEED_RESET.equals(b.kind)) {
@@ -834,7 +1079,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
         final EditText resetF = resetField;
         final RadioGroup targetF = targetRg;
         final boolean[] saved = {false};
-        String title = Describe.shortName(b, layout) + " (row " + b.row + ", column " + b.col + ")";
+        String title = Describe.shortName(b, layout, engine.placeOffset) + " (row " + b.row + ", column " + b.col + ")";
 
         new AlertDialog.Builder(this)
                 .setTitle(title)
@@ -876,10 +1121,10 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
                     }
                     SharedPreferences.Editor ed = prefs.edit();
                     if (stepF != null) {
-                        ed.putString("step", String.valueOf(Math.max(0.1, parseDouble(stepF, engine.stepPercent))));
+                        ed.putString("stepv", String.valueOf(Math.max(0.001, Math.min(10, parseDouble(stepF, engine.speedStep)))));
                     }
                     if (resetF != null) {
-                        ed.putString("defspeed", String.valueOf(Math.max(-20, Math.min(20,
+                        ed.putString("defspeed", String.valueOf(Math.max(-10, Math.min(10,
                                 parseDouble(resetF, engine.defaultSpeed)))));
                     }
                     if (targetF != null) {
@@ -1068,6 +1313,7 @@ public class MainActivity extends Activity implements Engine.Listener, OscClient
 
     @Override
     protected void onDestroy() {
+        httpStatus.stop();
         client.stop();
         engine.shutdown();
         super.onDestroy();

@@ -1,6 +1,6 @@
 # MADRIX Deck
 
-Android control surface that sends OSC straight to MADRIX 5 over Wi-Fi.
+Android control surface for MADRIX 5 over Wi-Fi, using OSC and/or MADRIX Remote HTTP.
 No Companion needed. Works with mobile data on: the app pins itself to Wi-Fi,
 even on a network with no internet.
 
@@ -28,6 +28,19 @@ even on a network with no internet.
 - COLOUR A = MADRIX Global Colour 1, COLOUR B = Global Colour 2.
 - SNAP / 1s / 2s set the crossfade for colours and places (places use MADRIX /Fade/Time). The lit one is active.
 - The first colour press after opening the app snaps; later presses fade.
+
+### Places and HTTP status (MADRIX Remote HTTP)
+
+Turn on Remote HTTP in MADRIX (Preferences > Remote Control > Remote HTTP) and set its
+port in Settings (default 80). Settings > Test HTTP shows MADRIX's raw replies.
+
+- Place buttons show MADRIX thumbnails and place names; empty places are dimmed.
+- The current place is read back about once a second, whatever changed it.
+- Settings > First place picks which 32 places the page shows (banks of 16: 1, 17, 33...).
+- Settings > Send presses with: OSC or HTTP. Status can come from OSC feedback, HTTP, or both.
+- The top bar shows OSC and HTTP separately.
+
+Speed is in MADRIX units: 1.0 = normal, 0 = paused, negative = reverse, limited to -10...10.
 
 ### Feedback (optional)
 

@@ -19,8 +19,13 @@ public final class DeckLayout {
     public static final String KIND_SPEED_UP = "speed_up";
     public static final String KIND_SPEED_RESET = "speed_reset";
     public static final String KIND_FADE = "fade";
+    /** Neutral grey for place buttons; thumbnails from MADRIX are drawn over it. */
+    public static final int PLACE_GREY = 0x3a3a3a;
 
     public final List<Page> pages = new ArrayList<>();
+    /** 1 = up to app 2.3 (coloured place buttons), 2 = grey places with dividers. */
+    public int version = CURRENT_VERSION;
+    public static final int CURRENT_VERSION = 2;
 
     public static final class Page {
         public String name = "";
@@ -28,6 +33,8 @@ public final class DeckLayout {
         public int cols = 4;
         public int rows = 8;
         public final TreeMap<Integer, String> headers = new TreeMap<>();
+        /** Rows that get a thin divider line above them. */
+        public final java.util.TreeSet<Integer> dividers = new java.util.TreeSet<>();
         public final List<Btn> buttons = new ArrayList<>();
 
         public Btn at(int row, int col) {
@@ -145,7 +152,7 @@ public final class DeckLayout {
 
     public JSONObject toJson() throws JSONException {
         JSONObject root = new JSONObject();
-        root.put("version", 1);
+        root.put("version", CURRENT_VERSION);
         JSONArray jp = new JSONArray();
         for (Page p : pages) {
             JSONObject o = new JSONObject();
@@ -158,6 +165,11 @@ public final class DeckLayout {
                 h.put(String.valueOf(e.getKey()), e.getValue());
             }
             o.put("headers", h);
+            JSONArray dv = new JSONArray();
+            for (int r : p.dividers) {
+                dv.put(r);
+            }
+            o.put("dividers", dv);
             JSONArray jb = new JSONArray();
             for (Btn b : p.buttons) {
                 JSONObject ob = new JSONObject();
@@ -204,6 +216,7 @@ public final class DeckLayout {
 
     public static DeckLayout fromJson(JSONObject root) {
         DeckLayout layout = new DeckLayout();
+        layout.version = root.optInt("version", 1);
         JSONArray jp = root.optJSONArray("pages");
         if (jp == null) {
             return layout;
@@ -227,6 +240,15 @@ public final class DeckLayout {
                         p.headers.put(Integer.parseInt(k), str(h, k, ""));
                     } catch (NumberFormatException ignored) {
                         // skip bad key
+                    }
+                }
+            }
+            JSONArray dv = o.optJSONArray("dividers");
+            if (dv != null) {
+                for (int k = 0; k < dv.length(); k++) {
+                    Object v = dv.opt(k);
+                    if (v instanceof Number) {
+                        p.dividers.add(((Number) v).intValue());
                     }
                 }
             }

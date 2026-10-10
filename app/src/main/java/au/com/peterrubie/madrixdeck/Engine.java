@@ -43,7 +43,12 @@ public final class Engine {
     private final ExecutorService fades = Executors.newCachedThreadPool();
 
     // Settings
-    public volatile double stepPercent = 10;
+    /** Speed step in MADRIX units (1.0 = normal speed). */
+    public volatile double speedStep = 0.1;
+    /** Added to every place button's index: 0 shows places 1-32, 16 shows 17-48, and so on. */
+    public volatile int placeOffset = 0;
+    public static final double SPEED_LIMIT = 10.0;
+    public static final int PLACE_COUNT = 256;
     public volatile double defaultSpeed = 1.0;
     /** "A", "B" or "AB". */
     public volatile String speedTarget = "A";
@@ -60,6 +65,8 @@ public final class Engine {
     private final Map<Integer, AtomicInteger> fadeGen = new ConcurrentHashMap<>();
     private final Map<Integer, Boolean> fading = new ConcurrentHashMap<>();
     private volatile boolean feedbackSeen = false;
+    /** When a place was last pressed here; HTTP status is ignored briefly so the highlight doesn't flick back. */
+    private volatile long lastLocalPlace = 0;
 
     public Engine(Sender sender, Listener listener) {
         this.sender = sender;
@@ -142,7 +149,13 @@ public final class Engine {
             return;
         }
         Matcher dm = DECK.matcher(path);
-        if (dm.matches() && "Places/Index".equals(dm.group(2))) {
+        if (dm.matches() && "Places/Index".equals(dm.group(2)) && !args.isEmpty() && args.get(0) instanceof Number) {
+            int place = ((Number) args.get(0)).intValue() + placeOffset;
+            if (place < 0 || place >= PLACE_COUNT) {
+                return; // beyond MADRIX's 256 places
+            }
+            args = java.util.Collections.singletonList(place);
+            lastLocalPlace = System.currentTimeMillis();
             // Place changes use MADRIX's own crossfade time: keep it in step with SNAP / 1s / 2s.
             sendFadeTime();
         }
@@ -245,8 +258,8 @@ public final class Engine {
     private void changeSpeed(int direction) {
         for (int d : targetDecks()) {
             double cur = speed[d] != null ? speed[d] : defaultSpeed;
-            double next = direction == 0 ? defaultSpeed : cur + direction * stepPercent / 100.0;
-            next = Math.max(-20.0, Math.min(20.0, Math.round(next * 10000.0) / 10000.0));
+            double next = direction == 0 ? defaultSpeed : cur + direction * speedStep;
+            next = Math.max(-SPEED_LIMIT, Math.min(SPEED_LIMIT, Math.round(next * 10000.0) / 10000.0));
             sender.send(OscMessage.of("/Deck" + DECK_NAMES[d] + "/SpeedMaster", (float) next));
             speed[d] = next;
         }
@@ -289,6 +302,25 @@ public final class Engine {
             return;
         }
         if (applyState(m.address, m.args, true)) {
+            notifyChanged();
+        }
+    }
+
+    /** Deck state read over HTTP (0-based storage and place; null = unknown). */
+    public void applyExternal(int deck, Integer storage, Integer place) {
+        if (System.currentTimeMillis() - lastLocalPlace < 1500) {
+            return; // MADRIX may not have caught up with a press made here yet
+        }
+        boolean changed = false;
+        if (storage != null && storage >= 0 && !storage.equals(activeStorage[deck])) {
+            activeStorage[deck] = storage;
+            changed = true;
+        }
+        if (place != null && place >= 0 && !place.equals(activePlace[deck])) {
+            activePlace[deck] = place;
+            changed = true;
+        }
+        if (changed) {
             notifyChanged();
         }
     }
@@ -368,7 +400,7 @@ public final class Engine {
                 int d = "A".equals(dm.group(1)) ? DECK_A : DECK_B;
                 if ("Places/Index".equals(dm.group(2))) {
                     placeDeck = d;
-                    place = ((Number) a.args.get(0)).intValue();
+                    place = ((Number) a.args.get(0)).intValue() + placeOffset;
                 } else if ("Storages/Index".equals(dm.group(2))) {
                     storage = ((Number) a.args.get(0)).intValue();
                 }
@@ -446,16 +478,38 @@ public final class Engine {
         }
     }
 
-    /** Speed of the first target deck as a percentage of normal (1.0 = 100%). */
+    /** Speed of the first target deck in MADRIX units, e.g. "1.10". */
     public String speedText() {
         int d = targetDecks()[0];
         double v = speed[d] != null ? speed[d] : defaultSpeed;
-        return Math.round(v * 100) + "%";
+        return String.format(Locale.US, "%.2f", v);
     }
 
+    /** Step size, e.g. "0.1". */
     public String stepText() {
-        double s = stepPercent;
-        return (s == Math.rint(s) ? String.valueOf((long) s) : String.format(Locale.US, "%.1f", s)) + "%";
+        return HttpCommands.num(speedStep);
+    }
+
+    /** 0-based MADRIX place a button selects (including the first-place offset), or null. */
+    public Integer placeOf(DeckLayout.Btn b) {
+        Integer base = basePlaceOf(b);
+        return base == null ? null : base + placeOffset;
+    }
+
+    /** 0-based place index stored on the button (before the offset), or null. */
+    public static Integer basePlaceOf(DeckLayout.Btn b) {
+        if (!DeckLayout.KIND_ACTION.equals(b.kind)) {
+            return null;
+        }
+        for (DeckLayout.Act a : b.actions) {
+            if (DeckLayout.Act.OSC.equals(a.type) && !a.args.isEmpty() && a.args.get(0) instanceof Number) {
+                Matcher dm = DECK.matcher(a.path);
+                if (dm.matches() && "Places/Index".equals(dm.group(2))) {
+                    return ((Number) a.args.get(0)).intValue();
+                }
+            }
+        }
+        return null;
     }
 
     public String speedTargetName() {
